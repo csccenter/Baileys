@@ -13,8 +13,13 @@ const fastify = Fastify({
 	ajv: { customOptions: { strict: false, allErrors: true } } 
 })
 
-// 1. تسجيل الإضافات الأساسية أولاً
-await fastify.register(cors, { origin: true })
+await fastify.register(cors, { 
+    origin: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
+    credentials: true
+})
+
 await fastify.register(swagger, {
 	openapi: {
 		info: { title: 'WhatsApp Secure API', version: '1.0.0' },
@@ -27,43 +32,44 @@ await fastify.register(swagger, {
 })
 await fastify.register(swaggerUi, { routePrefix: '/docs' })
 
-// 2. تعريف المخزن المؤقت
 const magicLinks = new Map<string, { instanceId: string, expires: number }>();
 
-// 3. (هام جداً) تعريف الحماية قبل تعريف أي مسارات إرسال أو حذف
 fastify.addHook('preHandler', async (request, reply) => {
     const url = request.url;
-    // قائمة المسارات المسموح بها بدون توكين
+    const { id } = request.params as { id: string };
+    const method = request.method;
+
     const isPublic = url.startsWith('/docs') || 
                      url.startsWith('/auth/request-link') || 
-                     (url === '/instances' && request.method === 'GET') ||
-                     (url === '/instances' && request.method === 'POST') ||
+                     (url === '/instances' && method === 'GET') ||
+                     (url === '/instances' && method === 'POST') ||
                      url.includes('/config');
 
     if (isPublic) return;
 
-    const { id } = request.params as { id: string };
-    const authHeader = request.headers['authorization'];
-
-    // إذا كان المسار يحتوي على ID لجهاز، نتحقق من التوكين
     if (id) {
-        const savedToken = InstanceManager.getOrGenerateToken(id);
+        const instance = InstanceManager.getInstance(id);
+
+        if (method === 'DELETE' && (!instance || instance.status !== 'CONNECTED')) {
+            return; 
+        }
+
+        // جلب التوكين من الإعدادات الجديدة
+        const config = InstanceManager.getConfig(id);
+        const savedToken = config.token;
+        const authHeader = request.headers['authorization'];
         const providedToken = authHeader?.replace('Bearer ', '');
 
         if (!providedToken || providedToken !== savedToken) {
-            console.log(`[Security] Blocked unauthorized access to instance: ${id}`);
             return reply.status(401).send({ 
                 error: 'Unauthorized', 
-                message: 'يجب توفير Token صحيح في Header الطلب (Authorization: Bearer YOUR_TOKEN)' 
+                message: 'هذا الجهاز مرتبط بنظام نشط، يجب تقديم التوكين لتنفيذ العملية.' 
             });
         }
     }
 });
 
-// 4. الآن نقوم بتعريف المسارات
-// ----------------------------
 
-// مسار طلب الرابط
 fastify.post('/auth/request-link', {
     schema: {
         tags: ['Authentication'],
@@ -96,7 +102,6 @@ fastify.post('/auth/request-link', {
     return { action: 'RECONNECTING', instanceId: found.id };
 });
 
-// مسار الإرسال المحمي
 fastify.post('/instances/:id/messages/send', {
     schema: {
         tags: ['Messages'],
@@ -120,17 +125,31 @@ fastify.post('/instances/:id/messages/send', {
 
     if (!sock || sock.status !== 'CONNECTED') return reply.status(400).send({ error: 'الجهاز غير متصل' });
 
+    const cleanNumber = jid.replace(/[^0-9]/g, ''); 
+    const formattedJid = cleanNumber.includes('@s.whatsapp.net') ? cleanNumber : `${cleanNumber}@s.whatsapp.net`;
+
+    const [resultCheck] = await sock.onWhatsApp(formattedJid);
+
+    if (!resultCheck || !resultCheck.exists) {
+        return reply.status(404).send({ 
+            status: 'failed', 
+            error: 'الرقم غير مسجل في واتساب أو غير صحيح' 
+        });
+    }
+
+    const finalJid = resultCheck.jid;
+
     try {
         let result;
         if (file) {
-            result = await sock.sendMessage(jid, {
+            result = await sock.sendMessage(finalJid, {
                 document: Buffer.from(file, 'base64'),
                 mimetype: 'application/pdf',
                 fileName: fileName || 'document.pdf',
                 caption: text
             });
         } else {
-            result = await sock.sendMessage(jid, { text });
+            result = await sock.sendMessage(finalJid, { text });
         }
         return { status: 'sent', messageId: result?.key.id };
     } catch (err: any) {
@@ -138,7 +157,6 @@ fastify.post('/instances/:id/messages/send', {
     }
 });
 
-// مسار الحصول على التوكين الدائم (عبر الماجيك لينك)
 fastify.get('/instances/:id/config', async (request: any, reply) => {
     const { id } = request.params;
     const { magic } = request.query;
@@ -149,14 +167,49 @@ fastify.get('/instances/:id/config', async (request: any, reply) => {
     }
     
     magicLinks.delete(magic);
+    
+    // جلب الإعدادات الموحدة
+    const config = InstanceManager.getConfig(id);
+    
     return {
         instanceId: id,
-        apiToken: InstanceManager.getOrGenerateToken(id),
-        owner: InstanceManager.getOwner(id)
+        apiToken: config.token,
+        owner: config.owner,
+        webhook: config.webhook // إعادة الويب هوك للفرونت إند
     };
 });
 
-// مسارات إدارة الـ Instances
+// --- مسار جديد لإضافة أو تعديل الـ Webhook ---
+fastify.post('/instances/:id/webhook', {
+    schema: {
+        tags: ['Settings'],
+        security: [{ bearerAuth: [] }],
+        params: { type: 'object', properties: { id: { type: 'string' } } },
+        body: {
+            type: 'object',
+            required: ['webhookUrl'],
+            properties: {
+                webhookUrl: { type: 'string' }
+            }
+        }
+    }
+}, async (request: any, reply) => {
+    const { id } = request.params;
+    const { webhookUrl } = request.body;
+
+    if (!InstanceManager.instances.has(id)) {
+        return reply.status(404).send({ error: 'النسخة غير موجودة' });
+    }
+
+    const updatedConfig = InstanceManager.updateConfig(id, { webhook: webhookUrl });
+
+    return { 
+        success: true, 
+        message: 'تم تحديث الـ Webhook بنجاح',
+        webhook: updatedConfig.webhook
+    };
+});
+
 fastify.get('/instances', async () => InstanceManager.getAllInstances());
 
 fastify.post('/instances', async () => {
@@ -172,7 +225,6 @@ fastify.delete('/instances/:id', {
     return { success: true };
 });
 
-// تشغيل السيرفر
 const start = async () => {
 	try {
 		await fastify.listen({ port: 3000, host: '0.0.0.0' })
