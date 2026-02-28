@@ -398,8 +398,42 @@ fastify.post('/test-webhook', { schema: { hide: true } }, async (request: any, r
     return reply.status(200).send({ success: true, message: 'Webhook received' });
 });
 
+// أضف هذا الاستدعاء في الأعلى إذا لم يكن موجوداً
+
+// دالة حماية السيرفر من التعدد
+async function acquireAppLock() {
+    const lockKey = 'wa:system:app_lock';
+    const lockTTL = 30; // القفل صالح لمدة 30 ثانية
+    
+    // محاولة وضع مفتاح في Redis. سينجح فقط إذا لم يكن المفتاح موجوداً (NX)
+    const acquired = await redisConnection.set(lockKey, 'LOCKED', 'EX', lockTTL, 'NX');
+    
+    if (!acquired) {
+        console.error('❌ [CRITICAL] محاولة تشغيل نسخة أخرى من النظام! يوجد سيرفر يعمل بالفعل. سيتم إيقاف هذه النسخة.');
+        process.exit(1); // إغلاق العملية فوراً
+    }
+
+    console.log('🔒 تم تفعيل قفل الحماية للنظام.');
+
+    // تجديد القفل باستمرار طالما السيرفر يعمل (كل 15 ثانية)
+    setInterval(async () => {
+        await redisConnection.expire(lockKey, lockTTL);
+    }, 15000);
+
+    // تحرير القفل عند إغلاق السيرفر بشكل طبيعي
+    const releaseLock = async () => {
+        await redisConnection.del(lockKey);
+        console.log('🔓 تم تحرير قفل النظام.');
+        process.exit(0);
+    };
+
+    process.on('SIGINT', releaseLock);
+    process.on('SIGTERM', releaseLock);
+}
 const start = async () => {
     try {
+				await acquireAppLock();
+				
         await fastify.listen({ port: 3000, host: '0.0.0.0' })
         const instancesPath = './instances';
         if (fs.existsSync(instancesPath)) {

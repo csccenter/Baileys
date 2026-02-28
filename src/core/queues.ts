@@ -1,6 +1,6 @@
 import { Queue, Worker, Job } from 'bullmq';
 import IORedis from 'ioredis';
-import { InstanceManager } from './instance-manager.js';
+import { InstanceManager } from './instance-manager';
 
 // 🌟 [تحديث: فصل إعدادات الاتصال لتمريرها ككائن لـ BullMQ]
 const connectionOptions = {

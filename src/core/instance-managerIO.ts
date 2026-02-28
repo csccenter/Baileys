@@ -4,7 +4,7 @@ import makeWASocket, {
 	fetchLatestBaileysVersion,
 	makeCacheableSignalKeyStore,
 	type WASocket 
-} from '../index.js' 
+} from '../index' 
 import { type Boom } from '@hapi/boom'
 import pino from 'pino'
 import path from 'path'

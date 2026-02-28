@@ -6,7 +6,7 @@ import makeWASocket, {
     WAMessageStatus,
     type WAMessageKey,
 	type WASocket 
-} from '../index.js'
+} from '../index'
 import { type Boom } from '@hapi/boom'
 import pino from 'pino'
 import path from 'path'
@@ -15,9 +15,9 @@ import QRCode from 'qrcode'
 import NodeCache from 'node-cache'
 
 import { createClient } from 'redis'
-import { useRedisAuthState } from '../Utils/use-redis-auth-state.ts'
+import { useRedisAuthState } from '../Utils/use-redis-auth-state'
 // استدعاء نظام الطوابير الجديد (Redis + BullMQ)
-import { redisConnection, messageQueue, webhookQueue } from './queues.js';
+import { redisConnection, messageQueue, webhookQueue } from './queues';
 
 // عميل Redis الكلاسيكي (مخصص فقط لحفظ الجلسات/Auth State لكي لا نكسر الكود القديم)
 export const redisClient = createClient({ url: 'redis://127.0.0.1:6379' });
