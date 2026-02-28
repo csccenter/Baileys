@@ -7,6 +7,11 @@ import { nanoid } from 'nanoid'
 import fs from 'fs'
 import path from 'path'
 
+import { createBullBoard } from '@bull-board/api'
+import { BullMQAdapter } from '@bull-board/api/bullMQAdapter'
+import { FastifyAdapter } from '@bull-board/fastify'
+import { messageQueue, webhookQueue } from '../core/queues.js'
+
 const fastify = Fastify({ 
 	bodyLimit: 10 * 1024 * 1024,
 	logger: { level: 'error' },
@@ -32,6 +37,18 @@ await fastify.register(swagger, {
 })
 await fastify.register(swaggerUi, { routePrefix: '/docs' })
 
+const serverAdapter = new FastifyAdapter();
+createBullBoard({
+    queues: [
+        new BullMQAdapter(messageQueue),
+        new BullMQAdapter(webhookQueue)
+    ],
+    serverAdapter,
+});
+serverAdapter.setBasePath('/admin/queues');
+
+fastify.register(serverAdapter.registerPlugin(), { prefix: '/admin/queues' });
+
 const magicLinks = new Map<string, { instanceId: string, expires: number }>();
 
 fastify.addHook('preHandler', async (request, reply) => {
@@ -40,6 +57,7 @@ fastify.addHook('preHandler', async (request, reply) => {
     const method = request.method;
 
     const isPublic = url.startsWith('/docs') || 
+											url.startsWith('/admin/queues') ||
                      url.startsWith('/auth/request-link') || 
                      (url === '/instances' && method === 'GET') ||
                      (url === '/instances' && method === 'POST') ||
@@ -48,13 +66,14 @@ fastify.addHook('preHandler', async (request, reply) => {
     if (isPublic) return;
 
     if (id) {
-        const instance = InstanceManager.getInstance(id);
+        // 🌟 [تحديث: انتظار جلب البيانات من Redis]
+        const instance = await InstanceManager.getInstance(id);
 
         if (method === 'DELETE' && (!instance || instance.status !== 'CONNECTED')) {
             return; 
         }
 
-        const config = InstanceManager.getConfig(id);
+        const config = await InstanceManager.getConfig(id);
         const savedToken = config.token;
         const authHeader = request.headers['authorization'];
         const providedToken = authHeader?.replace('Bearer ', '');
@@ -71,16 +90,14 @@ fastify.addHook('preHandler', async (request, reply) => {
 fastify.post('/auth/request-link', {
     schema: {
         tags: ['Authentication'],
-        body: {
-            type: 'object',
-            required: ['phoneNumber'],
-            properties: { phoneNumber: { type: 'string' } }
-        }
+        body: { type: 'object', required: ['phoneNumber'], properties: { phoneNumber: { type: 'string' } } }
     }
 }, async (request: any) => {
     const { phoneNumber } = request.body;
     const jid = `${phoneNumber}@s.whatsapp.net`;
-    const instances = InstanceManager.getAllInstances();
+    
+    // 🌟 [تحديث: الدالة أصبحت Async]
+    const instances = await InstanceManager.getAllInstances();
     const found = instances.find(inst => inst.owner === jid);
 
     if (!found) {
@@ -100,7 +117,6 @@ fastify.post('/auth/request-link', {
     return { action: 'RECONNECTING', instanceId: found.id };
 });
 
-// 🌟 [تحديث: مسار إرسال الرسائل الجديد]
 fastify.post('/instances/:id/messages/send', {
     schema: {
         tags: ['Messages'],
@@ -109,62 +125,47 @@ fastify.post('/instances/:id/messages/send', {
         body: {
             type: 'object',
             required: ['jid'],
-            properties: {
-                jid: { type: 'string' },
-                text: { type: 'string' },
-                file: { type: 'string' },
-                fileName: { type: 'string' }
-            }
+            properties: { jid: { type: 'string' }, text: { type: 'string' }, file: { type: 'string' }, fileName: { type: 'string' } }
         }
     }
 }, async (request: any, reply) => {
     const { id } = request.params;
     const { jid, text, file, fileName } = request.body;
     const sock = (InstanceManager as any).instances.get(id);
-    
     const timestamp = new Date().toISOString();
 
-    // 1. فحص حالة الاتصال
     if (!sock || sock.status !== 'CONNECTED') {
         return reply.status(200).send({ 
-            instanceId: id,
-            instanceStatus: 'DISCONNECTED',
-            waAccountStatus: 'unknown',
-            transactionId: 'unknown',
-            timestamp
+            instanceId: id, instanceStatus: 'DISCONNECTED', waAccountStatus: 'unknown', transactionId: 'unknown', timestamp
         });
     }
 
     const cleanNumber = jid.replace(/[^0-9]/g, ''); 
     const formattedJid = cleanNumber.includes('@s.whatsapp.net') ? cleanNumber : `${cleanNumber}@s.whatsapp.net`;
-
-    // 2. التحقق من الرقم في واتساب
     const [resultCheck] = await sock.onWhatsApp(formattedJid);
 
     if (!resultCheck || !resultCheck.exists) {
         return reply.status(200).send({ 
-            instanceId: id,
-            instanceStatus: 'CONNECTED',
-            waAccountStatus: 'not_exists',
-            transactionId: 'unknown',
-            timestamp
+            instanceId: id, instanceStatus: 'CONNECTED', waAccountStatus: 'not_exists', transactionId: 'unknown', timestamp
         });
     }
 
     const finalJid = resultCheck.jid;
-    const transactionId = nanoid(16); // توليد رمز العملية
+    const transactionId = nanoid(16); 
 
-    // 3. إرسال الاستجابة الفورية للفرونت إند (Non-blocking)
     reply.status(200).send({
-        instanceId: id,
-        instanceStatus: 'CONNECTED',
-        waAccountStatus: 'exists',
-        transactionId,
-        timestamp
+        instanceId: id, instanceStatus: 'CONNECTED', waAccountStatus: 'exists', transactionId, timestamp
     });
 
-    // 4. جدولة تنفيذ العملية في الخلفية
-    InstanceManager.scheduleMessageSend(id, finalJid, text, file, fileName, transactionId);
+    // 🌟 [تحديث: إضافة العملية إلى BullMQ مع تأخير عشوائي ونظام تكرار أُسّي Exponential Backoff]
+    const initialDelay = Math.floor(Math.random() * 4000) + 1000;
+    await messageQueue.add('send', { id, jid: finalJid, text, file, fileName, transactionId }, {
+        delay: initialDelay,
+        attempts: 8, 
+        backoff: { type: 'exponential', delay: 3000 },
+				removeOnComplete: { count: 1000 }, // 🌟 الاحتفاظ بآخر 1000 عملية ناجحة
+        removeOnFail: { count: 1000 }      // 🌟 الاحتفاظ بآخر 1000 عملية فاشلة
+			});
 });
 
 fastify.get('/instances/:id/config', async (request: any, reply) => {
@@ -177,47 +178,29 @@ fastify.get('/instances/:id/config', async (request: any, reply) => {
     }
     
     magicLinks.delete(magic);
-    const config = InstanceManager.getConfig(id);
+    const config = await InstanceManager.getConfig(id);
     
-    return {
-        instanceId: id,
-        apiToken: config.token,
-        owner: config.owner,
-        webhook: config.webhook 
-    };
+    return { instanceId: id, apiToken: config.token, owner: config.owner, webhook: config.webhook };
 });
 
 fastify.post('/instances/:id/webhook', {
     schema: {
-        tags: ['Settings'],
-        security: [{ bearerAuth: [] }],
+        tags: ['Settings'], security: [{ bearerAuth: [] }],
         params: { type: 'object', properties: { id: { type: 'string' } } },
-        body: {
-            type: 'object',
-            required: ['webhookUrl'],
-            properties: {
-                webhookUrl: { type: 'string' }
-            }
-        }
+        body: { type: 'object', required: ['webhookUrl'], properties: { webhookUrl: { type: 'string' } } }
     }
 }, async (request: any, reply) => {
     const { id } = request.params;
     const { webhookUrl } = request.body;
 
-    if (!InstanceManager.instances.has(id)) {
-        return reply.status(404).send({ error: 'النسخة غير موجودة' });
-    }
+    if (!InstanceManager.instances.has(id)) return reply.status(404).send({ error: 'النسخة غير موجودة' });
 
-    const updatedConfig = InstanceManager.updateConfig(id, { webhook: webhookUrl });
+    const updatedConfig = await InstanceManager.updateConfig(id, { webhook: webhookUrl });
 
-    return { 
-        success: true, 
-        message: 'تم تحديث الـ Webhook بنجاح',
-        webhook: updatedConfig.webhook
-    };
+    return { success: true, message: 'تم تحديث الـ Webhook بنجاح', webhook: updatedConfig.webhook };
 });
 
-fastify.get('/instances', async () => InstanceManager.getAllInstances());
+fastify.get('/instances', async () => await InstanceManager.getAllInstances());
 
 fastify.post('/instances', async () => {
 	const id = nanoid(10);
@@ -225,9 +208,7 @@ fastify.post('/instances', async () => {
 	return { instanceId: id };
 });
 
-fastify.delete('/instances/:id', {
-    schema: { security: [{ bearerAuth: [] }] }
-}, async (request: any) => {
+fastify.delete('/instances/:id', { schema: { security: [{ bearerAuth: [] }] } }, async (request: any) => {
     await InstanceManager.deleteInstance(request.params.id);
     return { success: true };
 });
@@ -239,8 +220,6 @@ fastify.post('/test-webhook', async (request: any, reply) => {
     console.log('📦 محتوى الطلب (Body):');
     console.log(JSON.stringify(request.body, null, 2));
     console.log('--------------------------------------------------\n');
-    
-    // الرد بـ 200 OK حتى لا يقوم النظام بإعادة المحاولة (Retry)
     return reply.status(200).send({ success: true, message: 'Webhook received' });
 });
 
