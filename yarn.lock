@@ -796,6 +796,16 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@fastify/basic-auth@npm:^6.2.0":
+  version: 6.2.0
+  resolution: "@fastify/basic-auth@npm:6.2.0"
+  dependencies:
+    "@fastify/error": "npm:^4.0.0"
+    fastify-plugin: "npm:^5.0.0"
+  checksum: 10c0/c8d8b3c7baa41543e1e08bfa4f09eb32c698f9fa02bdad5b614386ae07f0365fe98b4912d7dee9d3673e4084ab66a59cc4592b6c43315eb173d48c7f0714b095
+  languageName: node
+  linkType: hard
+
 "@fastify/cors@npm:^11.2.0":
   version: 11.2.0
   resolution: "@fastify/cors@npm:11.2.0"
@@ -3347,6 +3357,7 @@ __metadata:
     "@cacheable/node-cache": "npm:^1.4.0"
     "@eslint/eslintrc": "npm:^3.3.1"
     "@eslint/js": "npm:^9.31.0"
+    "@fastify/basic-auth": "npm:^6.2.0"
     "@fastify/cors": "npm:^11.2.0"
     "@fastify/swagger": "npm:^9.7.0"
     "@fastify/swagger-ui": "npm:^5.2.5"

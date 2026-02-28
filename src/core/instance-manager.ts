@@ -16,7 +16,6 @@ import NodeCache from 'node-cache'
 
 import { createClient } from 'redis'
 import { useRedisAuthState } from '../Utils/use-redis-auth-state.ts'
-
 // استدعاء نظام الطوابير الجديد (Redis + BullMQ)
 import { redisConnection, messageQueue, webhookQueue } from './queues.js';
 
@@ -45,7 +44,8 @@ interface ExtendedSocket extends WASocket {
 
 export class InstanceManager {
 	public static instances = new Map<string, ExtendedSocket>()
-    public static messageStores = new Map<string, NodeCache>() 
+	private static deletedInstances = new Set<string>()
+  public static messageStores = new Map<string, NodeCache>() 
 	private static msgRetryCounterCache = new NodeCache()
 	
 	static {
@@ -155,6 +155,12 @@ export class InstanceManager {
     }	
 
 	static async createInstance(id: string) {
+
+			if (this.deletedInstances.has(id)) {
+          console.log(`🚫 [Instance: ${id}] Blocked creation. This instance is permanently deleted.`);
+          return null; // إيقاف التنفيذ فوراً قبل إنشاء أي مجلد!
+      }
+		
 			const authPath = path.join('./instances', id)
             if (!fs.existsSync(authPath)) {
                 fs.mkdirSync(authPath, { recursive: true })
@@ -162,15 +168,15 @@ export class InstanceManager {
 
 			let state: any, saveCreds: any;
 
-            if (isRedisConnected) {
-                ({ state, saveCreds } = await useRedisAuthState(id, redisClient));
-            } else {
-                const sessionPath = path.join(authPath, 'session');
-                ({ state, saveCreds } = await useMultiFileAuthState(sessionPath));
-            }
+      if (isRedisConnected) {
+          ({ state, saveCreds } = await useRedisAuthState(id, redisClient));
+      } else {
+          const sessionPath = path.join(authPath, 'session');
+          ({ state, saveCreds } = await useMultiFileAuthState(sessionPath));
+      }
 
-            const messageStore = new NodeCache({ stdTTL: 86400, checkperiod: 3600, useClones: false });
-            this.messageStores.set(id, messageStore);
+      const messageStore = new NodeCache({ stdTTL: 86400, checkperiod: 3600, useClones: false });
+      this.messageStores.set(id, messageStore);
 			const { version } = await fetchLatestBaileysVersion()
 
 			const sock = makeWASocket({
@@ -213,9 +219,42 @@ export class InstanceManager {
 							}
 
 							if (connection === 'close') {
+
+								if (InstanceManager.deletedInstances.has(id)) {
+                	return;
+            		}
+
 								const statusCode = (lastDisconnect?.error as Boom)?.output?.statusCode
-								if (statusCode !== DisconnectReason.loggedOut && InstanceManager.instances.has(id)) {
-									setTimeout(() => InstanceManager.createInstance(id), 3000);
+								if (statusCode === DisconnectReason.loggedOut && InstanceManager.instances.has(id)) {
+									console.log(`🚪 [Instance: ${id}] User logged out manually! Starting cleanup...`);
+									
+									sock.status = 'CLOSED';
+
+									// 1. إرسال ويب هوك لإشعار الفرونت إند بضرورة ربط الجهاز من جديد
+									const config = await InstanceManager.getConfig(id);
+									if (config && config.webhook) {
+											await webhookQueue.add('system-webhook', {
+													instanceId: id,
+													payload: {
+															event: 'device_logged_out',
+															instanceId: id,
+															message: 'تم تسجيل الخروج من الجهاز، يرجى مسح رمز QR من جديد.',
+															timestamp: new Date().toISOString()
+													}
+											}, { attempts: 5, backoff: { type: 'exponential', delay: 3000 } });
+									}
+
+									// 2. التنظيف الشامل: حذف الجلسة من الذاكرة ومن Redis
+									await InstanceManager.deleteInstance(id);
+								}
+								else {
+									console.log(`🔄 [Instance: ${id}] Reconnecting in 3 seconds...`);
+									setTimeout(() => {
+									// فحص إضافي داخل التايم آوت لزيادة الأمان
+										if (!InstanceManager.deletedInstances.has(id)) {
+											InstanceManager.createInstance(id)
+										}
+									}, 3000);
 								}
 							}
 					}
@@ -307,28 +346,67 @@ export class InstanceManager {
 		}
 	}
 
-    static async deleteInstance(id: string) {
+	static async deleteInstance(id: string) {
+
+				this.deletedInstances.add(id);
+				
         const sock = InstanceManager.instances.get(id);
         const store = InstanceManager.messageStores.get(id);
-        if (store) store.close();
-        InstanceManager.messageStores.delete(id); 
+        
+        // 1. إزالة النسخة من الذاكرة فوراً لمنع أي عمليات متقاطعة
         InstanceManager.instances.delete(id);
+        if (store) store.close();
+        InstanceManager.messageStores.delete(id);
 
         if (sock) {
             try {
+                // 🌟 [الإصلاح]: إلغاء كافة مستمعي الأحداث قبل الإغلاق 
+                // هذا يمنع كود الـ 'connection.update' من رصد الإغلاق ومحاولة إعادة الاتصال
                 sock.ev.removeAllListeners('connection.update');
                 sock.ev.removeAllListeners('creds.update');
-                sock.end(undefined);
-            } catch (err) {}
+                sock.ev.removeAllListeners('messages.upsert');
+                
+                sock.end(undefined); // إغلاق الاتصال بسلام
+                sock.status = 'CLOSED';
+            } catch (err: any) {
+                console.error(`⚠️ Error during socket termination for ${id}:`, err.message);
+            }
         }
 
+        // 2. تنظيف الطوابير (هذا الكود ممتاز كما هو لديك)
+        try {
+            const jobs = await messageQueue.getJobs(['waiting', 'delayed', 'active', 'paused', 'prioritized']);
+            for (const job of jobs) {
+                if (job.data && job.data.id === id) await job.remove();
+            }
+        } catch (queueErr) {}
+
+        // 3. حذف الملفات المادية (Physical Files)
         const authPath = path.join('./instances', id);
         if (fs.existsSync(authPath)) {
-            setTimeout(() => { try { fs.rmSync(authPath, { recursive: true, force: true }); } catch (e) {} }, 2000);
+            // 🌟 زيادة المهلة إلى 5 ثوانٍ لضمان تحرير كافة أقفال الملفات تماماً
+            setTimeout(async () => { 
+                try { 
+                    if (fs.existsSync(authPath)) {
+                        // استخدام rm مع recursive و force للحذف القسري
+                        // واستخدام promises لضمان اكتمال العملية
+                        await fs.promises.rm(authPath, { 
+                            recursive: true, 
+                            force: true, 
+                            maxRetries: 3, 
+                            retryDelay: 1000 
+                        });
+                        console.log(`🗑️ [Cleanup] Folder deleted for Instance: ${id}`);
+                    }
+                } catch (e: any) {
+                    console.error(`❌ Failed to delete folder for ${id}:`, e.message);
+                    // محاولة أخيرة كحل طوارئ باستخدام rmSync التقليدي
+                    try { fs.rmSync(authPath, { recursive: true, force: true }); } catch(innerE) {}
+                } 
+            }, 5000); 
         }
-
-        await redisConnection.del(`wa:config:${id}`); // إزالة الإعدادات من كاش Redis
-
+        // 4. تنظيف Redis
+        await redisConnection.del(`wa:config:${id}`);
         if (isRedisConnected) {
             try { await redisClient.del(`wa:session:${id}`); } catch (err) {}
         }
