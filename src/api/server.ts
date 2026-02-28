@@ -54,7 +54,6 @@ fastify.addHook('preHandler', async (request, reply) => {
             return; 
         }
 
-        // جلب التوكين من الإعدادات الجديدة
         const config = InstanceManager.getConfig(id);
         const savedToken = config.token;
         const authHeader = request.headers['authorization'];
@@ -68,7 +67,6 @@ fastify.addHook('preHandler', async (request, reply) => {
         }
     }
 });
-
 
 fastify.post('/auth/request-link', {
     schema: {
@@ -102,6 +100,7 @@ fastify.post('/auth/request-link', {
     return { action: 'RECONNECTING', instanceId: found.id };
 });
 
+// 🌟 [تحديث: مسار إرسال الرسائل الجديد]
 fastify.post('/instances/:id/messages/send', {
     schema: {
         tags: ['Messages'],
@@ -122,39 +121,50 @@ fastify.post('/instances/:id/messages/send', {
     const { id } = request.params;
     const { jid, text, file, fileName } = request.body;
     const sock = (InstanceManager as any).instances.get(id);
+    
+    const timestamp = new Date().toISOString();
 
-    if (!sock || sock.status !== 'CONNECTED') return reply.status(400).send({ error: 'الجهاز غير متصل' });
+    // 1. فحص حالة الاتصال
+    if (!sock || sock.status !== 'CONNECTED') {
+        return reply.status(200).send({ 
+            instanceId: id,
+            instanceStatus: 'DISCONNECTED',
+            waAccountStatus: 'unknown',
+            transactionId: 'unknown',
+            timestamp
+        });
+    }
 
     const cleanNumber = jid.replace(/[^0-9]/g, ''); 
     const formattedJid = cleanNumber.includes('@s.whatsapp.net') ? cleanNumber : `${cleanNumber}@s.whatsapp.net`;
 
+    // 2. التحقق من الرقم في واتساب
     const [resultCheck] = await sock.onWhatsApp(formattedJid);
 
     if (!resultCheck || !resultCheck.exists) {
-        return reply.status(404).send({ 
-            status: 'failed', 
-            error: 'الرقم غير مسجل في واتساب أو غير صحيح' 
+        return reply.status(200).send({ 
+            instanceId: id,
+            instanceStatus: 'CONNECTED',
+            waAccountStatus: 'not_exists',
+            transactionId: 'unknown',
+            timestamp
         });
     }
 
     const finalJid = resultCheck.jid;
+    const transactionId = nanoid(16); // توليد رمز العملية
 
-    try {
-        let result;
-        if (file) {
-            result = await sock.sendMessage(finalJid, {
-                document: Buffer.from(file, 'base64'),
-                mimetype: 'application/pdf',
-                fileName: fileName || 'document.pdf',
-                caption: text
-            });
-        } else {
-            result = await sock.sendMessage(finalJid, { text });
-        }
-        return { status: 'sent', messageId: result?.key.id };
-    } catch (err: any) {
-        return reply.status(500).send({ error: err.message });
-    }
+    // 3. إرسال الاستجابة الفورية للفرونت إند (Non-blocking)
+    reply.status(200).send({
+        instanceId: id,
+        instanceStatus: 'CONNECTED',
+        waAccountStatus: 'exists',
+        transactionId,
+        timestamp
+    });
+
+    // 4. جدولة تنفيذ العملية في الخلفية
+    InstanceManager.scheduleMessageSend(id, finalJid, text, file, fileName, transactionId);
 });
 
 fastify.get('/instances/:id/config', async (request: any, reply) => {
@@ -167,19 +177,16 @@ fastify.get('/instances/:id/config', async (request: any, reply) => {
     }
     
     magicLinks.delete(magic);
-    
-    // جلب الإعدادات الموحدة
     const config = InstanceManager.getConfig(id);
     
     return {
         instanceId: id,
         apiToken: config.token,
         owner: config.owner,
-        webhook: config.webhook // إعادة الويب هوك للفرونت إند
+        webhook: config.webhook 
     };
 });
 
-// --- مسار جديد لإضافة أو تعديل الـ Webhook ---
 fastify.post('/instances/:id/webhook', {
     schema: {
         tags: ['Settings'],
@@ -223,6 +230,18 @@ fastify.delete('/instances/:id', {
 }, async (request: any) => {
     await InstanceManager.deleteInstance(request.params.id);
     return { success: true };
+});
+
+// 🧪 نقطة نهاية مؤقتة لاختبار الـ Webhook
+fastify.post('/test-webhook', async (request: any, reply) => {
+    const time = new Date().toLocaleTimeString();
+    console.log(`\n🔔 [${time}] تم استدعاء الـ Webhook التجريبي بنجاح!`);
+    console.log('📦 محتوى الطلب (Body):');
+    console.log(JSON.stringify(request.body, null, 2));
+    console.log('--------------------------------------------------\n');
+    
+    // الرد بـ 200 OK حتى لا يقوم النظام بإعادة المحاولة (Retry)
+    return reply.status(200).send({ success: true, message: 'Webhook received' });
 });
 
 const start = async () => {
