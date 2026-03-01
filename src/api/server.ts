@@ -224,7 +224,7 @@ const frontendPath = path.join(process.cwd(), 'public');
 
 					await redisConnection.setex(`wa:magic:${magicToken}`, 600, found.id);
 
-					const managementUrl = `http://localhost:3001/?manage=${found.id}&magic=${magicToken}`;
+					const managementUrl = `https://api.mersaliy.com/?manage=${found.id}&magic=${magicToken}`;
 					
 					// 🌟 [الإصلاح الجذري]: استخدام نظام الطوابير بدلاً من الإرسال المباشر
 					const transactionId = `sys_magic_${nanoid(10)}`; // تمييزه كرسالة نظام لتسهيل تتبعها
