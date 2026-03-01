@@ -12,6 +12,7 @@ import { BullMQAdapter } from '@bull-board/api/bullMQAdapter'
 import { FastifyAdapter } from '@bull-board/fastify'
 import { messageQueue, webhookQueue, redisConnection } from '../core/queues.js'
 import fastifyBasicAuth from '@fastify/basic-auth'
+import fastifyStatic from '@fastify/static'
 
 async function bootstrap() {
 	const fastify = Fastify({ 
@@ -167,6 +168,32 @@ async function bootstrap() {
 			}
 	});
 
+	// 🌟 دمج الفرونت إند مع الباك إند
+const frontendPath = path.join(process.cwd(), 'public');
+	
+	if (fs.existsSync(frontendPath)) {
+			// 1. تسجيل إضافة تقديم الملفات الثابتة
+			await fastify.register(fastifyStatic, {
+					root: frontendPath,
+					prefix: '/', // تقديم الملفات على المسار الرئيسي
+					wildcard: false // إيقاف الوايلدكارد لنتمكن من معالجة أخطاء Vue Router بأنفسنا
+			});
+
+			// 2. حل مشكلة توجيهات Vue Router (SPA Fallback)
+			// إذا طلب المستخدم مساراً غير موجود في الـ API، وكان المتصفح يطلب صفحة HTML، نرسل له index.html
+			fastify.setNotFoundHandler((request, reply) => {
+					if (request.method === 'GET' && request.headers.accept?.includes('text/html')) {
+							reply.sendFile('index.html');
+					} else {
+							reply.status(404).send({ error: 'Not Found', message: 'المسار غير موجود' });
+					}
+			});
+			
+			console.log('✅ Frontend successfully integrated with Backend.');
+	} else {
+			console.log('⚠️ Frontend "dist" folder not found. Serving API only.');
+	}
+
 	fastify.post('/auth/request-link', {
 			schema: {
 					hide: true,
@@ -220,6 +247,48 @@ async function bootstrap() {
 			return { action: 'RECONNECTING', instanceId: found.id };
 	});
 
+	fastify.put('/instances/:id/token', {
+			schema: {
+					summary: 'تحديث توكين الحماية (Token)',
+					description: 'تسمح لك هذه النقطة بتحديث التوكين السري الخاص بالجهاز. ملاحظة: يجب إرسال التوكين الحالي الصالح في ترويسة (Authorization Bearer) لتتمكن من تغييره.',
+					tags: ['Settings'], 
+                    security: [{ bearerAuth: [] }],
+					params: { 
+                        type: 'object', 
+                        properties: { id: { type: 'string', description: 'معرف الجهاز (Instance ID)' } } 
+                    },
+					body: { 
+                        type: 'object', 
+                        required: ['newToken'], 
+                        properties: { 
+                            newToken: { 
+                                type: 'string', 
+                                minLength: 6,
+                                description: 'التوكين الجديد الذي سيتم استخدامه للمصادقة في الطلبات القادمة' 
+                            } 
+                        } 
+                    }
+			}
+	}, async (request: any, reply) => {
+			const { id } = request.params;
+			const { newToken } = request.body;
+
+			// التحقق من أن النسخة موجودة بالفعل (اختياري كزيادة أمان، لأن الـ preHandler يتحقق مسبقاً)
+			const config = await InstanceManager.getConfig(id);
+			if (!config || !config.token) {
+                return reply.status(404).send({ error: 'النسخة غير موجودة أو لا تملك إعدادات صالحة' });
+            }
+
+            // تحديث التوكين وحفظه في Redis عبر الدالة المجهزة مسبقاً
+			const updatedConfig = await InstanceManager.updateConfig(id, { token: newToken });
+
+			return { 
+                success: true, 
+                message: 'تم تحديث التوكين بنجاح. يرجى استخدام التوكين الجديد في الطلبات القادمة.', 
+                token: updatedConfig.token 
+            };
+	});
+	
 	fastify.post('/instances/:id/messages/send', {
 			schema: {
 					summary: 'إرسال رسالة (نصية أو مستند PDF)',
