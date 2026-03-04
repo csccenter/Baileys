@@ -15,6 +15,9 @@ import fastifyBasicAuth from '@fastify/basic-auth'
 import fastifyStatic from '@fastify/static'
 
 async function bootstrap() {
+
+	const INSTANCE_SECRET_KEY = 'ubovv1qwz0msltpuiniybo'
+	
 	const fastify = Fastify({ 
 		bodyLimit: 10 * 1024 * 1024,
 		logger: { level: 'error' },
@@ -30,79 +33,56 @@ async function bootstrap() {
 
 	await fastify.register(swagger, {
 		openapi: {
-					openapi: '3.1.0', // 🌟 تحديث الإصدار لدعم ميزة الـ Webhooks رسمياً
+			openapi: '3.1.0', 
 			info: { 
-							title: 'واجهة تطبيقات الارسال من خلال واتس اب', 
-							version: '1.0.0',
-							description: 'دليل استخدام واجهة برمجة تطبيقات واتساب. يمكنك إرسال الرسائل من خلال الـ API، واستقبال التحديثات عبر الـ Webhook.'
-					},
+					title: 'واجهة تطبيقات الارسال من خلال واتس اب', 
+					version: '1.0.0',
+					description: 'دليل استخدام واجهة برمجة تطبيقات واتساب. يمكنك إرسال الرسائل من خلال الـ API، واستقبال التحديثات عبر الـ Webhook.'
+			},
 			components: {
 				securitySchemes: {
 					bearerAuth: { type: 'http', scheme: 'bearer', bearerFormat: 'JWT' }
 				}
 			},
-					// 🌟 توثيق الـ Webhooks التي سيتم إرسالها لخادم العميل
-	// 🌟 توثيق الـ Webhooks بتفاصيل دقيقة وأمثلة
-					webhooks: {
-							'WhatsAppEvents': {
-									post: {
-											summary: 'أحداث واتساب (Webhook Payload)',
-											description: 'نقطة النهاية (Endpoint) الخاصة بك يجب أن تكون جاهزة لاستقبال طلبات `POST` تحتوي على هذا الـ JSON.',
-											requestBody: {
-													content: {
-															'application/json': {
-																	schema: {
-																			type: 'object',
-																			properties: {
-																					event: { 
-																							type: 'string', 
-																							enum: ['message_received', 'message_sent', 'message_delivered', 'device_logged_out'],
-																							description: `**نوع الحدث الوارد.** توقع إحدى القيم التالية:
-	* \`message_received\`: يتم إرساله عندما يستقبل رقمك رسالة جديدة.
-	* \`message_sent\`: يتم إرساله لتأكيد خروج رسالتك من خوادمنا إلى شبكة واتساب.
-	* \`message_delivered\`: يتم إرساله عندما يصل إشعار استلام (علامتي صح) من هاتف المستلم.
-	* \`device_logged_out\`: تنبيه أمني وحرج يتم إرساله إذا قام المستخدم بتسجيل الخروج من تطبيق واتساب في هاتفه.`
-																					},
-																					instanceId: { 
-																							type: 'string', 
-																							description: 'المعرف الفريد للجهاز (Instance ID) الذي صدر منه هذا الحدث.' 
-																					},
-																					payload: { 
-																							type: 'object', 
-																							description: `**تفاصيل الحدث.** يختلف محتوى هذا الكائن بناءً على نوع الحدث (event).
-																							
-	**مثال لرسالة واردة (message_received):**
-	\`\`\`json
-	{
-		"isGroup": false,
-		"sender": "966500000000",
-		"message": "مرحباً بكم",
-		"timestamp": "2023-10-01T12:00:00.000Z"
-	}
-	\`\`\`
-
-	**مثال لحالة توصيل (message_delivered):**
-	\`\`\`json
-	{
-		"transactionId": "txn_12345abc",
-		"messageId": "BAE5...",
-		"recipient": "966500000000@s.whatsapp.net",
-		"deliveryTimestamp": "2023-10-01T12:00:05.000Z"
-	}
-	\`\`\`
-	`
-																					}
-																			}
-																	}
-															}
-													}
-											},
-											responses: {
-													'200': { description: 'يجب أن يرد خادمك برمز `200 OK` لتأكيد استلام الحدث بنجاح.' }
-											}
-									}
-							}
-					}
+            webhooks: {
+                'WhatsAppEvents': {
+                        post: {
+                                summary: 'أحداث واتساب (Webhook Payload)',
+                                description: 'نقطة النهاية (Endpoint) الخاصة بك يجب أن تكون جاهزة لاستقبال طلبات `POST` تحتوي على هذا الـ JSON.',
+                                requestBody: {
+                                        content: {
+                                                'application/json': {
+                                                        schema: {
+                                                                type: 'object',
+                                                                properties: {
+                                                                        event: { 
+                                                                                type: 'string', 
+                                                                                enum: ['message_received', 'message_sent', 'message_delivered', 'device_logged_out'],
+                                                                                description: `**نوع الحدث الوارد.** توقع إحدى القيم التالية:
+* \`message_received\`: يتم إرساله عندما يستقبل رقمك رسالة جديدة.
+* \`message_sent\`: يتم إرساله لتأكيد خروج رسالتك من خوادمنا إلى شبكة واتساب.
+* \`message_delivered\`: يتم إرساله عندما يصل إشعار استلام (علامتي صح) من هاتف المستلم.
+* \`device_logged_out\`: تنبيه أمني وحرج يتم إرساله إذا قام المستخدم بتسجيل الخروج من تطبيق واتساب في هاتفه.`
+                                                                        },
+                                                                        instanceId: { 
+                                                                                type: 'string', 
+                                                                                description: 'المعرف الفريد للجهاز (Instance ID) الذي صدر منه هذا الحدث.' 
+                                                                        },
+                                                                        payload: { 
+                                                                                type: 'object', 
+                                                                                description: `**تفاصيل الحدث.** يختلف محتوى هذا الكائن بناءً على نوع الحدث (event).`
+                                                                        }
+                                                                }
+                                                        }
+                                                }
+                                        }
+                                },
+                                responses: {
+                                        '200': { description: 'يجب أن يرد خادمك برمز `200 OK` لتأكيد استلام الحدث بنجاح.' }
+                                }
+                        }
+                }
+            }
 		}
 	})
 
@@ -147,7 +127,6 @@ async function bootstrap() {
 			if (isPublic) return;
 
 			if (id) {
-					// 🌟 [تحديث: انتظار جلب البيانات من Redis]
 					const instance = await InstanceManager.getInstance(id);
 
 					if (method === 'DELETE' && (!instance || instance.status !== 'CONNECTED')) {
@@ -168,19 +147,15 @@ async function bootstrap() {
 			}
 	});
 
-	// 🌟 دمج الفرونت إند مع الباك إند
 const frontendPath = path.join(process.cwd(), 'public');
 	
 	if (fs.existsSync(frontendPath)) {
-			// 1. تسجيل إضافة تقديم الملفات الثابتة
 			await fastify.register(fastifyStatic, {
 					root: frontendPath,
-					prefix: '/', // تقديم الملفات على المسار الرئيسي
-					wildcard: false // إيقاف الوايلدكارد لنتمكن من معالجة أخطاء Vue Router بأنفسنا
+					prefix: '/', 
+					wildcard: false 
 			});
 
-			// 2. حل مشكلة توجيهات Vue Router (SPA Fallback)
-			// إذا طلب المستخدم مساراً غير موجود في الـ API، وكان المتصفح يطلب صفحة HTML، نرسل له index.html
 			fastify.setNotFoundHandler((request, reply) => {
 					if (request.method === 'GET' && request.headers.accept?.includes('text/html')) {
 							reply.sendFile('index.html');
@@ -207,7 +182,6 @@ const frontendPath = path.join(process.cwd(), 'public');
 	}, async (request: any) => {
 			const { phoneNumber } = request.body;
 			
-			// تنظيف الرقم من علامة الزائد والمسافات قبل البحث
 			const cleanNumber = phoneNumber.replace(/[^0-9]/g, '');
 			const jid = `${cleanNumber}@s.whatsapp.net`;
 			
@@ -226,8 +200,7 @@ const frontendPath = path.join(process.cwd(), 'public');
 
 					const managementUrl = `https://api.mersaliy.com/?manage=${found.id}&magic=${magicToken}`;
 					
-					// 🌟 [الإصلاح الجذري]: استخدام نظام الطوابير بدلاً من الإرسال المباشر
-					const transactionId = `sys_magic_${nanoid(10)}`; // تمييزه كرسالة نظام لتسهيل تتبعها
+					const transactionId = `sys_magic_${nanoid(10)}`; 
 					
 					await messageQueue.add('send', { 
 							id: found.id, 
@@ -235,10 +208,10 @@ const frontendPath = path.join(process.cwd(), 'public');
 							text: `🔐 رابط الإدارة الخاص بك:\n${managementUrl}`, 
 							transactionId 
 					}, {
-							delay: 1000, // تأخير بسيط لثانية واحدة
-							attempts: 8, // المحاولة 8 مرات متصاعدة في حال الفشل
+							delay: 1000, 
+							attempts: 8, 
 							backoff: { type: 'exponential', delay: 3000 },
-							removeOnComplete: { count: 1000 }, // حفظه في لوحة Bull Board للمراقبة
+							removeOnComplete: { count: 1000 }, 
 							removeOnFail: { count: 1000 }
 					});
 
@@ -249,6 +222,7 @@ const frontendPath = path.join(process.cwd(), 'public');
 
 	fastify.put('/instances/:id/token', {
 			schema: {
+				 	hide: true,
 					summary: 'تحديث توكين الحماية (Token)',
 					description: 'تسمح لك هذه النقطة بتحديث التوكين السري الخاص بالجهاز. ملاحظة: يجب إرسال التوكين الحالي الصالح في ترويسة (Authorization Bearer) لتتمكن من تغييره.',
 					tags: ['Settings'], 
@@ -273,13 +247,11 @@ const frontendPath = path.join(process.cwd(), 'public');
 			const { id } = request.params;
 			const { newToken } = request.body;
 
-			// التحقق من أن النسخة موجودة بالفعل (اختياري كزيادة أمان، لأن الـ preHandler يتحقق مسبقاً)
 			const config = await InstanceManager.getConfig(id);
 			if (!config || !config.token) {
                 return reply.status(404).send({ error: 'النسخة غير موجودة أو لا تملك إعدادات صالحة' });
             }
 
-            // تحديث التوكين وحفظه في Redis عبر الدالة المجهزة مسبقاً
 			const updatedConfig = await InstanceManager.updateConfig(id, { token: newToken });
 
 			return { 
@@ -312,7 +284,6 @@ const frontendPath = path.join(process.cwd(), 'public');
 											description: 'نص الرسالة' 
 									},
 							},
-							// إضافة مثال توضيحي يظهر مباشرة في Swagger
 							example: {
 									jid: "966500000000",
 									text: "مرفق لكم فاتورة الاشتراك",
@@ -348,14 +319,13 @@ const frontendPath = path.join(process.cwd(), 'public');
 					instanceId: id, instanceStatus: 'CONNECTED', waAccountStatus: 'exists', transactionId, timestamp
 			});
 
-			// 🌟 [تحديث: إضافة العملية إلى BullMQ مع تأخير عشوائي ونظام تكرار أُسّي Exponential Backoff]
 			const initialDelay = Math.floor(Math.random() * 4000) + 1000;
 			await messageQueue.add('send', { id, jid: finalJid, text, file, fileName, transactionId }, {
 					delay: initialDelay,
 					attempts: 8, 
 					backoff: { type: 'exponential', delay: 3000 },
-					removeOnComplete: { count: 1000 }, // 🌟 الاحتفاظ بآخر 1000 عملية ناجحة
-					removeOnFail: { count: 1000 }      // 🌟 الاحتفاظ بآخر 1000 عملية فاشلة
+					removeOnComplete: { count: 1000 }, 
+					removeOnFail: { count: 1000 }      
 				});
 	});
 
@@ -365,12 +335,10 @@ const frontendPath = path.join(process.cwd(), 'public');
 
 			const savedInstanceId = await redisConnection.get(`wa:magic:${magic}`);
 
-			// التحقق مما إذا كان الرابط موجوداً ومطابقاً للجهاز المطلوب
 			if (!savedInstanceId || savedInstanceId !== id) {
 					return reply.status(403).send({ error: 'رابط منتهي أو غير صحيح' });
 			}
 			
-			// 🌟 [التحديث]: حذف الرابط فوراً من Redis بعد الاستخدام الناجح لضمان استخدامه مرة واحدة فقط
 			await redisConnection.del(`wa:magic:${magic}`);
 			
 			const config = await InstanceManager.getConfig(id);
@@ -396,9 +364,7 @@ const frontendPath = path.join(process.cwd(), 'public');
 			return { success: true, message: 'تم تحديث الـ Webhook بنجاح', webhook: updatedConfig.webhook };
 	});
 
-	// ❌ تم حذف مسار GET /instances بالكامل لسد الثغرة الأمنية
 
-	// 🌟 1. المسار الجديد: جلب الأجهزة بناءً على توكينات المتصفح فقط
 	fastify.post('/instances/verify', {
 			schema: {
 					hide: true,
@@ -414,32 +380,26 @@ const frontendPath = path.join(process.cwd(), 'public');
 	}, async (request: any, reply) => {
 			const { tokens } = request.body;
 			
-			// إذا كان المتصفح جديداً ولا يحمل أي توكين، نرد بمصفوفة فارغة
 			if (!tokens || !Array.isArray(tokens) || tokens.length === 0) {
 					return [];
 			}
 
-			// جلب جميع الأجهزة من السيرفر
 			const allInstances = await InstanceManager.getAllInstances();
-			
-			// فلترة الأجهزة: إرجاع الأجهزة التي يملك المتصفح التوكين الخاص بها فقط
 			const verifiedInstances = allInstances.filter(inst => tokens.includes(inst.token));
 			
 			return verifiedInstances;
 	});
 
-	// 🌟 2. تحديث مسار الإنشاء: إرجاع التوكين مع الـ ID لكي يحفظه المتصفح
-	fastify.post('/instances', { schema: { hide: true } }, async () => {
-		const id = nanoid(10);
-		await InstanceManager.createInstance(id);
-			
-			// جلب الإعدادات لإرجاع التوكين الذي تم توليده
+	fastify.post('/instances', { schema: { hide: true } }, async (request: any, reply) => {
+			const { creation_secret } = request.body || {};
+			if (creation_secret !== INSTANCE_SECRET_KEY) {
+					return reply.status(403).send({ error: 'Forbidden', message: 'غير مصرح بإنشاء أجهزة' });
+			}
+
+			const id = nanoid(10);
+			await InstanceManager.createInstance(id);
 			const config = await InstanceManager.getConfig(id);
-			
-		return { 
-					instanceId: id,
-					token: config.token // إرسال التوكين للفرونت إند ليحفظه
-			};
+			return { instanceId: id, token: config.token };
 	});
 
 	fastify.delete('/instances/:id', { schema: { hide: true, security: [{ bearerAuth: [] }] } }, async (request: any) => {
@@ -447,14 +407,10 @@ const frontendPath = path.join(process.cwd(), 'public');
 			return { success: true };
 	});
 
-	// 🧪 نقطة نهاية مؤقتة لاختبار الـ Webhook
 	fastify.post('/test-webhook', { schema: { hide: true } }, async (request: any, reply) => {
 			return reply.status(200).send({ success: true, message: 'Webhook received' });
 	});
 
-	// أضف هذا الاستدعاء في الأعلى إذا لم يكن موجوداً
-
-	// إضافة هذا المسار داخل ملف src/api/server.ts
 	fastify.get('/admin/all-accounts', {
 			schema: {
 					hide: true,
@@ -463,11 +419,8 @@ const frontendPath = path.join(process.cwd(), 'public');
 					security: [{ bearerAuth: [] }]
 			}
 	}, async (request: any, reply) => {
-			// 1. تحديد رقم جوال المدير
 			const ADMIN_NUMBER = '966550558542';
 
-			// 2. التحقق من هوية مرسل الطلب
-			// ملاحظة: نفترض هنا أنك تمرر الـ ID الخاص بجهازك كمدير في الطلب للتحقق
 			const adminInstanceId = request.headers['x-admin-instance-id']; 
 			const config = await InstanceManager.getConfig(adminInstanceId);
 
@@ -475,10 +428,8 @@ const frontendPath = path.join(process.cwd(), 'public');
 					return reply.status(403).send({ error: 'غير مسموح', message: 'هذه الخاصية متاحة لمدير النظام فقط.' });
 			}
 
-			// 3. جلب كافة الحسابات
 			const allInstances = await InstanceManager.getAllRegisteredInstances();
 			
-			// 4. تصفية الحسابات المتصلة حالياً فقط
 			const connectedAccounts = allInstances.filter(inst => inst.status === 'CONNECTED');
 
 			return {
@@ -487,27 +438,23 @@ const frontendPath = path.join(process.cwd(), 'public');
 			};
 	});
 
-	// دالة حماية السيرفر من التعدد
 	async function acquireAppLock() {
 			const lockKey = 'wa:system:app_lock';
-			const lockTTL = 30; // القفل صالح لمدة 30 ثانية
+			const lockTTL = 30; 
 			
-			// محاولة وضع مفتاح في Redis. سينجح فقط إذا لم يكن المفتاح موجوداً (NX)
 			const acquired = await redisConnection.set(lockKey, 'LOCKED', 'EX', lockTTL, 'NX');
 			
 			if (!acquired) {
 					console.error('❌ [CRITICAL] محاولة تشغيل نسخة أخرى من النظام! يوجد سيرفر يعمل بالفعل. سيتم إيقاف هذه النسخة.');
-					process.exit(1); // إغلاق العملية فوراً
+					process.exit(1);
 			}
 
 			console.info('🔒 تم تفعيل قفل الحماية للنظام.');
 
-			// تجديد القفل باستمرار طالما السيرفر يعمل (كل 15 ثانية)
 			setInterval(async () => {
 					await redisConnection.expire(lockKey, lockTTL);
 			}, 15000);
 
-			// تحرير القفل عند إغلاق السيرفر بشكل طبيعي
 			const releaseLock = async () => {
 					await redisConnection.del(lockKey);
 					console.info('🔓 تم تحرير قفل النظام.');
@@ -517,16 +464,51 @@ const frontendPath = path.join(process.cwd(), 'public');
 			process.on('SIGINT', releaseLock);
 			process.on('SIGTERM', releaseLock);
 	}
+
+	async function autoCleanupZombies() {
+			const instancesPath = './instances';
+			if (!fs.existsSync(instancesPath)) return;
+
+			const folders = fs.readdirSync(instancesPath);
+			console.info(`🔍 [Cleanup] Starting scan for zombie folders in ${instancesPath}...`);
+
+			for (const id of folders) {
+					const fullPath = path.join(instancesPath, id);
+					
+					if (!fs.lstatSync(fullPath).isDirectory()) continue;
+
+					// 2. استخدام دالتك الذكية المجهزة مسبقاً لجلب الإعدادات بأمان
+					const config = await InstanceManager.getConfig(id);
+					
+					const sessionPath = path.join(fullPath, 'session', 'creds.json');
+					const legacySessionPath = path.join(fullPath, 'creds.json');
+					const hasLocalSession = fs.existsSync(sessionPath) || fs.existsSync(legacySessionPath);
+
+					const isLinked = config && config.owner !== null;
+
+					if (!isLinked && !hasLocalSession) {
+							console.warn(`⚠️ [Cleanup] Zombie folder detected: "${id}". Unlinked and no local session. Deleting...`);
+							try {
+									fs.rmSync(fullPath, { recursive: true, force: true });
+									await redisConnection.del(`wa:config:${id}`); 
+									
+									console.info(`✅ [Cleanup] Successfully removed zombie: "${id}"`);
+							} catch (err: any) {
+									console.error(`❌ [Cleanup] Failed to delete "${id}":`, err.message);
+							}
+					}
+			}
+	}
+
 	const start = async () => {
 			try {
 					await acquireAppLock();
-					
+					await autoCleanupZombies();
 					await fastify.listen({ port: 3000, host: '0.0.0.0' })
 					const instancesPath = './instances';
 					if (fs.existsSync(instancesPath)) {
 							fs.readdirSync(instancesPath).forEach(id => {
 									const fullPath = path.join(instancesPath, id);
-									// 🌟 التأكد من أنه مجلد وليس ملفاً عادياً
 									if(fs.lstatSync(fullPath).isDirectory()) {
 											console.info(`🚀 [Startup] Restoring instance: ${id}`);
 											InstanceManager.createInstance(id);

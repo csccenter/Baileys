@@ -4,7 +4,6 @@ import { initAuthCreds } from './auth-utils.js'
 import { BufferJSON } from './generics.js'
 
 // 1. الواجهة المخصصة (Custom Interface) لحل تعارض TypeScript
-// هذه تخبر TypeScript أننا نحتاج فقط إلى هذه الدوال الثلاث من الـ redisClient
 export interface SimpleRedisClient {
     hSet(key: string, field: string, value: string): Promise<any>;
     hGet(key: string, field: string): Promise<string | undefined | null>;
@@ -13,7 +12,7 @@ export interface SimpleRedisClient {
 
 export const useRedisAuthState = async (
     sessionId: string,
-    redisClient: SimpleRedisClient // 2. استخدمنا الواجهة المخصصة هنا بدلاً من RedisClientType
+    redisClient: SimpleRedisClient
 ): Promise<{ state: AuthenticationState; saveCreds: () => Promise<void> }> => {
     
     const sessionKey = `wa:session:${sessionId}`
@@ -29,15 +28,14 @@ export const useRedisAuthState = async (
 
     const readData = async (field: string) => {
         try {
-            const data = await redisClient.hGet(sessionKey, field)
-            if (data) {
-                return JSON.parse(data, BufferJSON.reviver)
+            const value = await redisClient.hGet(sessionKey, field)
+            if (value) {
+                return JSON.parse(value, BufferJSON.reviver)
             }
-            return null
         } catch (error) {
             console.error(`[Redis Read Error] Session: ${sessionId}, Field: ${field}`, error)
-            return null
         }
+        return null
     }
 
     const removeData = async (field: string) => {
@@ -51,7 +49,7 @@ export const useRedisAuthState = async (
     let creds: AuthenticationCreds
     const credsData = await readData('creds')
     if (credsData) {
-        creds = credsData as AuthenticationCreds
+        creds = credsData
     } else {
         creds = initAuthCreds()
     }
@@ -88,6 +86,12 @@ export const useRedisAuthState = async (
         },
         saveCreds: async () => {
             await writeData(creds, 'creds')
+            // 🌟 السطر الجديد: تسجيل الطابع الزمني (Timestamp) في كل مرة يتم فيها تحديث الجلسة
+            try {
+                await redisClient.hSet(sessionKey, 'last_modified', Date.now().toString());
+            } catch (error) {
+                console.error(`[Redis Timestamp Error] Session: ${sessionId}`, error);
+            }
         }
     }
 }
