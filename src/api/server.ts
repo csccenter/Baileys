@@ -189,7 +189,7 @@ const frontendPath = path.join(process.cwd(), 'public');
 					}
 			});
 			
-			console.log('✅ Frontend successfully integrated with Backend.');
+			console.info('✅ Frontend successfully integrated with Backend.');
 	} else {
 			console.log('⚠️ Frontend "dist" folder not found. Serving API only.');
 	}
@@ -291,7 +291,7 @@ const frontendPath = path.join(process.cwd(), 'public');
 	
 	fastify.post('/instances/:id/messages/send', {
 			schema: {
-					summary: 'إرسال رسالة (نصية أو مستند PDF)',
+					summary: 'إرسال رسالة',
 					description: 'تسمح لك هذه النقطة بإرسال رسائل نصية أو ملفات PDF إلى رقم واتساب محدد. يتم التحقق من وجود الرقم قبل الإرسال.',
 					tags: ['Messages'],
 					security: [{ bearerAuth: [] }],
@@ -309,24 +309,13 @@ const frontendPath = path.join(process.cwd(), 'public');
 									},
 									text: { 
 											type: 'string', 
-											description: 'نص الرسالة أو الوصف المصاحب للملف (Caption)' 
+											description: 'نص الرسالة' 
 									},
-									file: { 
-											type: 'string', 
-											description: `**محتوى الملف بتنسيق Base64.** \nيجب تحويل ملف الـ PDF إلى سلسلة نصية (Base64 String) قبل إرسالها. 
-											\n*ملاحظة: لا ترسل رابط الملف أو المسار، بل المحتوى المشفر فقط.*` 
-									},
-									fileName: { 
-											type: 'string', 
-											description: 'اسم الملف الذي سيظهر للمستلم (مثال: invoice.pdf)' 
-									}
 							},
 							// إضافة مثال توضيحي يظهر مباشرة في Swagger
 							example: {
 									jid: "966500000000",
 									text: "مرفق لكم فاتورة الاشتراك",
-									fileName: "invoice.pdf",
-									file: "JVBERi0xLjQKJ... (Base64 content) ..."
 							}
 					}
 			}
@@ -460,15 +449,43 @@ const frontendPath = path.join(process.cwd(), 'public');
 
 	// 🧪 نقطة نهاية مؤقتة لاختبار الـ Webhook
 	fastify.post('/test-webhook', { schema: { hide: true } }, async (request: any, reply) => {
-			const time = new Date().toLocaleTimeString();
-			console.log(`\n🔔 [${time}] تم استدعاء الـ Webhook التجريبي بنجاح!`);
-			console.log('📦 محتوى الطلب (Body):');
-			console.log(JSON.stringify(request.body, null, 2));
-			console.log('--------------------------------------------------\n');
 			return reply.status(200).send({ success: true, message: 'Webhook received' });
 	});
 
 	// أضف هذا الاستدعاء في الأعلى إذا لم يكن موجوداً
+
+	// إضافة هذا المسار داخل ملف src/api/server.ts
+	fastify.get('/admin/all-accounts', {
+			schema: {
+					hide: true,
+					summary: 'قائمة الحسابات للمدير فقط',
+					tags: ['Admin'],
+					security: [{ bearerAuth: [] }]
+			}
+	}, async (request: any, reply) => {
+			// 1. تحديد رقم جوال المدير
+			const ADMIN_NUMBER = '966550558542';
+
+			// 2. التحقق من هوية مرسل الطلب
+			// ملاحظة: نفترض هنا أنك تمرر الـ ID الخاص بجهازك كمدير في الطلب للتحقق
+			const adminInstanceId = request.headers['x-admin-instance-id']; 
+			const config = await InstanceManager.getConfig(adminInstanceId);
+
+			if (!config || config.owner !== `${ADMIN_NUMBER}@s.whatsapp.net`) {
+					return reply.status(403).send({ error: 'غير مسموح', message: 'هذه الخاصية متاحة لمدير النظام فقط.' });
+			}
+
+			// 3. جلب كافة الحسابات
+			const allInstances = await InstanceManager.getAllRegisteredInstances();
+			
+			// 4. تصفية الحسابات المتصلة حالياً فقط
+			const connectedAccounts = allInstances.filter(inst => inst.status === 'CONNECTED');
+
+			return {
+					totalConnected: connectedAccounts.length,
+					accounts: connectedAccounts
+			};
+	});
 
 	// دالة حماية السيرفر من التعدد
 	async function acquireAppLock() {
@@ -483,7 +500,7 @@ const frontendPath = path.join(process.cwd(), 'public');
 					process.exit(1); // إغلاق العملية فوراً
 			}
 
-			console.log('🔒 تم تفعيل قفل الحماية للنظام.');
+			console.info('🔒 تم تفعيل قفل الحماية للنظام.');
 
 			// تجديد القفل باستمرار طالما السيرفر يعمل (كل 15 ثانية)
 			setInterval(async () => {
@@ -493,7 +510,7 @@ const frontendPath = path.join(process.cwd(), 'public');
 			// تحرير القفل عند إغلاق السيرفر بشكل طبيعي
 			const releaseLock = async () => {
 					await redisConnection.del(lockKey);
-					console.log('🔓 تم تحرير قفل النظام.');
+					console.info('🔓 تم تحرير قفل النظام.');
 					process.exit(0);
 			};
 
@@ -511,12 +528,12 @@ const frontendPath = path.join(process.cwd(), 'public');
 									const fullPath = path.join(instancesPath, id);
 									// 🌟 التأكد من أنه مجلد وليس ملفاً عادياً
 									if(fs.lstatSync(fullPath).isDirectory()) {
-											console.log(`🚀 [Startup] Restoring instance: ${id}`);
+											console.info(`🚀 [Startup] Restoring instance: ${id}`);
 											InstanceManager.createInstance(id);
 									}
 							});
 					}
-			} catch (err) { process.exit(1) }
+			} catch (err) { console.log(`Starting Server error: ${err}`); process.exit(1); }
 	}
 	start();
 }

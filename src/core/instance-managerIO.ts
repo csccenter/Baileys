@@ -81,11 +81,9 @@ export class InstanceManager {
 									// تأمين وجود توكين
 									this.getOrGenerateToken(id);
 									
-									console.log(`✅ [Instance: ${id}] Connected as ${userJid} At ${Date.now()}`);
 							}
 
 							if (connection === 'close') {
-									console.log(`⛔ [Instance: ${id}] Closed!`);
 
 								const statusCode = (lastDisconnect?.error as Boom)?.output?.statusCode
 								if (statusCode !== DisconnectReason.loggedOut && this.instances.has(id)) {
@@ -127,9 +125,6 @@ export class InstanceManager {
 															'';
 
 													// طباعة البيانات في الكونسول إذا كان هناك محتوى نصي
-													if (messageContent) {
-															console.log(`\n📩 رسالة جديدة [Instance: ${id}] 📱 الرقم: ${senderNumber} 💬 النص: ${messageContent}\n`)
-													}
 											}
 									}
 							}

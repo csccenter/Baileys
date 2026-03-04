@@ -28,7 +28,7 @@ redisClient.on('error', (err) => {
     isRedisConnected = false;
 });
 redisClient.on('connect', () => {
-    console.log('✅ Connected to Redis Auth successfully');
+    console.info('✅ Connected to Redis Auth successfully');
     isRedisConnected = true;
 });
 redisClient.connect().catch(() => {
@@ -78,7 +78,6 @@ export class InstanceManager {
             }
         } else {
             configData = { owner: null, token: this.generateToken(), webhook: null };
-            if (!fs.existsSync(authPath)) fs.mkdirSync(authPath, { recursive: true });
         }
 
         // 3. حفظ الإعدادات في Redis للاستخدام المستقبلي
@@ -131,9 +130,6 @@ export class InstanceManager {
         if (!messageContent) return;
 
         const now: Date = new Date();
-        console.log(`\n📩 ${logPrefix} [Instance: ${id}] النوع ${type}`);
-        console.log(`📱 رقم المرسل: ${senderNumber}`);
-        console.log(`💬 النص: ${messageContent}`);
 
         // 🌟 [تحديث: إضافة مهمة إرسال ويب هوك للطابور بدلاً من الإرسال المباشر]
         //const config = await InstanceManager.getConfig(id);
@@ -157,7 +153,6 @@ export class InstanceManager {
 	static async createInstance(id: string) {
 
 			if (this.deletedInstances.has(id)) {
-          console.log(`🚫 [Instance: ${id}] Blocked creation. This instance is permanently deleted.`);
           return null; // إيقاف التنفيذ فوراً قبل إنشاء أي مجلد!
       }
 		
@@ -215,7 +210,7 @@ export class InstanceManager {
 									sock.ownerJid = userJid;
 									
                                     await InstanceManager.updateConfig(id, { owner: userJid });
-                                    console.log(`✅ [Instance: ${id}] Connected as ${userJid}`);
+                                    console.info(`✅ [Instance: ${id}] Connected as ${userJid}`);
 							}
 
 							if (connection === 'close') {
@@ -226,7 +221,7 @@ export class InstanceManager {
 
 								const statusCode = (lastDisconnect?.error as Boom)?.output?.statusCode
 								if (statusCode === DisconnectReason.loggedOut && InstanceManager.instances.has(id)) {
-									console.log(`🚪 [Instance: ${id}] User logged out manually! Starting cleanup...`);
+									console.info(`🚪 [Instance: ${id}] User logged out manually! Starting cleanup...`);
 									
 									sock.status = 'CLOSED';
 
@@ -248,7 +243,6 @@ export class InstanceManager {
 									await InstanceManager.deleteInstance(id);
 								}
 								else {
-									console.log(`🔄 [Instance: ${id}] Reconnecting in 3 seconds...`);
 									setTimeout(() => {
 									// فحص إضافي داخل التايم آوت لزيادة الأمان
 										if (!InstanceManager.deletedInstances.has(id)) {
@@ -332,6 +326,19 @@ export class InstanceManager {
         return Promise.all(promises);
 	}
 
+	// في ملف src/core/instance-manager.ts
+	static async getAllRegisteredInstances() {
+			const promises = Array.from(InstanceManager.instances.entries()).map(async ([id, sock]) => {
+					const config = await InstanceManager.getConfig(id);
+					return {
+							instanceId: id,
+							status: sock.status,
+							owner: config.owner ? config.owner.split('@')[0] : 'غير مرتبط بعد'
+					};
+			});
+			return Promise.all(promises);
+	}
+
 	static async getInstance(id: string) {
 		const sock = InstanceManager.instances.get(id)
 		if (!sock) return null
@@ -396,7 +403,6 @@ export class InstanceManager {
                             maxRetries: 3, 
                             retryDelay: 1000 
                         });
-                        console.log(`🗑️ [Cleanup] Folder deleted for Instance: ${id}`);
                     }
                 } catch (e: any) {
                     console.error(`❌ Failed to delete folder for ${id}:`, e.message);

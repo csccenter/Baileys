@@ -1,9 +1,14 @@
 ### تعريف المتغيرات (قم بتغييرها بناءً على بيانات النسخة الخاصة بك)
-@baseUrl = http://localhost:3000
-@instanceId = hx4VivRALa
+@baseUrl = https://api.mersaliy.com
+@instanceId = AZMn9NpOYv
 @apiToken = ubovv1qwz0msltpuiniybo
 @targetNumber = 966550558542
 
+### 0. جلب بيانات الحسابات الحالية
+GET {{baseUrl}}/admin/all-accounts
+Authorization: Bearer {{apiToken}}
+x-admin-instance-id: {{instanceId}}
+Accept: application/json
 
 ### 1. إرسال رسالة نصية عادية
 POST {{baseUrl}}/instances/{{instanceId}}/messages/send

@@ -31,6 +31,11 @@ const messageWorker = new Worker('MessageQueue', async (job: Job) => {
     }
 
     let result: any;
+
+    await sock.sendPresenceUpdate('composing', jid);
+
+    await humanDelay(text);
+
     if (file) {
         result = await sock.sendMessage(jid, {
             document: Buffer.from(file, 'base64'),
@@ -41,6 +46,8 @@ const messageWorker = new Worker('MessageQueue', async (job: Job) => {
     } else {
         result = await sock.sendMessage(jid, { text });
     }
+
+    await sock.sendPresenceUpdate('paused', jid);
 
     // إذا نجح الإرسال، نحفظ بيانات العملية ونرسل إشعار الويب هوك
     if (result?.key?.id) {
@@ -95,7 +102,6 @@ const webhookWorker = new Worker('WebhookQueue', async (job: Job) => {
         throw new Error(`HTTP Status: ${response.status}`);
     }
     
-    console.log(`✅ [Webhook] Sent successfully for Event: ${payload.event}`);
 }, { connection: connectionOptions });
 
 webhookWorker.on('failed', (job, err) => {
@@ -104,3 +110,11 @@ webhookWorker.on('failed', (job, err) => {
         console.error(`⚠️ [WebhookQueue] Job failed for ${identifier}: ${err.message}`);
     }
 });
+
+const delay = (ms: number) => new Promise(res => setTimeout(res, ms))
+
+const humanDelay = async (text?: string) => {
+    if (!text) return delay(1500)
+    const typingTime = Math.min(6000, text.length * 50)
+    await delay(typingTime)
+}
