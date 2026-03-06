@@ -25,10 +25,18 @@ export const webhookQueue = new Queue('WebhookQueue', { connection: connectionOp
 const messageWorker = new Worker('MessageQueue', async (job: Job) => {
     const { id, jid, text, file, fileName, transactionId } = job.data;
     
-    const sock = InstanceManager.instances.get(id);
-    if (!sock || sock.status !== 'CONNECTED') {
-        throw new Error(`[Retry] Instance ${id} is not connected right now.`);
-    }
+		const sock = InstanceManager.instances.get(id);
+
+		// 1. إذا لم نجد الـ socket في الـ Map، فهذا يعني أن الجهاز تم حذفه نهائياً
+		if (!sock) {
+				console.warn(`⚠️ [MessageQueue] Instance ${id} is completely deleted. Dropping job ${job.id}.`);
+				return; // نستخدم return بدلاً من throw لإنهاء المهمة فوراً وعدم إعادتها للطابور (Fast-Fail)
+		}
+
+		// 2. إذا وجدناه لكنه غير متصل (انقطاع مؤقت للشبكة)، نرمي خطأ لكي يعيد BullMQ المحاولة لاحقاً
+		if (sock.status !== 'CONNECTED') {
+				throw new Error(`[Retry] Instance ${id} is temporarily disconnected. Will retry later.`);
+		}
 
     let result: any;
 

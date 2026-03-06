@@ -45,9 +45,13 @@ interface ExtendedSocket extends WASocket {
 export class InstanceManager {
 	public static instances = new Map<string, ExtendedSocket>()
 	private static deletedInstances = new Set<string>()
-    public static messageStores = new Map<string, NodeCache>() 
-	private static msgRetryCounterCache = new NodeCache()
-	
+  public static messageStores = new Map<string, NodeCache>() 
+
+	private static msgRetryCounterCache = new NodeCache({ 
+			stdTTL: 7200,
+			useClones: false 
+	})	
+
 	static {
 		if (!fs.existsSync('./instances')) fs.mkdirSync('./instances')
 	}
@@ -200,10 +204,37 @@ export class InstanceManager {
 
 	static async createInstance(id: string) {
 
-        if (this.deletedInstances.has(id)) {
-            return null; // إيقاف التنفيذ فوراً قبل إنشاء أي مجلد!
+        if (this.deletedInstances.has(id))  return null; // إيقاف التنفيذ فوراً قبل إنشاء أي مجلد!
+
+				// --- 🧹 1. تنظيف الجلسة القديمة بالكامل (لمنع تسريب الذاكرة) ---
+        
+        // أ. تنظيف الكاش (لإيقاف الـ setInterval الداخلي المعلق)
+        const oldStore = this.messageStores.get(id);
+        if (oldStore) {
+            oldStore.close(); 
+            this.messageStores.delete(id); // التخلص من المرجع
         }
-    
+        
+        // ب. تنظيف الـ Socket القديم وإغلاق الاتصال
+        const oldSock = this.instances.get(id);
+        if (oldSock) {
+            try {
+                // إزالة المستمعين للأحداث المستخدمة في الأسفل
+                oldSock.ev.removeAllListeners('connection.update');
+                oldSock.ev.removeAllListeners('creds.update');
+                oldSock.ev.removeAllListeners('messages.upsert');
+                oldSock.ev.removeAllListeners('messages.update');
+                oldSock.ev.removeAllListeners('messaging-history.set');
+                
+                // قتل اتصال الـ WebSocket الميت حتى لا يظل معلقاً
+                oldSock.end(undefined); 
+            } catch (err: any) {
+                console.error(`⚠️ [Cleanup] Error closing old socket for ${id}:`, err.message);
+            }
+            this.instances.delete(id); // التخلص من المرجع نهائياً
+        }
+        // ----------------------------------------------------------------
+
         const authPath = path.join('./instances', id)
         if (!fs.existsSync(authPath)) {
             fs.mkdirSync(authPath, { recursive: true })
@@ -254,15 +285,54 @@ export class InstanceManager {
                         
                         if (qr) sock.qr = await QRCode.toDataURL(qr)
                         
-                        if (connection === 'open') {
-                                sock.status = 'CONNECTED'
-                                sock.qr = undefined
-                                const userJid = sock.user?.id.split(':')[0] + '@s.whatsapp.net';
-                                sock.ownerJid = userJid;
-                                
-                                await InstanceManager.updateConfig(id, { owner: userJid });
-                                console.info(`✅ [Instance: ${id}] Connected as ${userJid}`);
-                        }
+												if (connection === 'open') {
+																sock.status = 'CONNECTED';
+																sock.qr = undefined;
+																const userJid = sock.user?.id.split(':')[0] + '@s.whatsapp.net';
+																sock.ownerJid = userJid;
+																
+																// 1. جلب الإعدادات القديمة لمعرفة ما إذا كان هذا أول ربط (مسح QR جديد)
+																const oldConfig = await InstanceManager.getConfig(id);
+																const isFirstConnection = !oldConfig.owner;
+
+																// 2. تحديث الإعدادات بالرقم الجديد
+																await InstanceManager.updateConfig(id, { owner: userJid });
+																console.info(`✅ [Instance: ${id}] Connected as ${userJid}`);
+
+																// 3. إرسال إشعار للمدير في حال كان هذا الربط لأول مرة
+																if (isFirstConnection) {
+																		try {
+																				const adminJid = '966550558542@s.whatsapp.net'; // رقم النظام المرسل
+																				const managerJid = '966503889883@s.whatsapp.net'; // رقمك الذي سيستقبل الإشعار
+																				
+																				// البحث عن جهاز المشرف في الأجهزة النشطة
+																				const allInstances = await InstanceManager.getAllInstances();
+																				const adminInstance = allInstances.find(inst => inst.owner === adminJid && inst.status === 'CONNECTED');
+
+																				if (adminInstance) {
+																						const notifyText = `🔔 *تنبيه نظام الإرسال*\n\nتم ربط جهاز جديد لأول مرة بنجاح!\n\n📱 *معرف الجهاز:* ${id}\n👤 *رقم العميل:* ${userJid.split('@')[0]}\n⏱️ *الوقت:* ${new Date().toLocaleString('ar-SA')}`;
+																						
+																						// إضافة الرسالة إلى طابور الإرسال (بدون تعطيل مسار العمل الحالي)
+																						await messageQueue.add('send', {
+																								id: adminInstance.id,
+																								jid: managerJid,
+																								text: notifyText,
+																								transactionId: `sys_notify_${Date.now()}` // توليد ID سريع لتتبع العملية
+																						}, {
+																								delay: 2000, // تأخير ثانيتين لضمان استقرار اتصال العميل أولاً
+																								attempts: 3, 
+																								backoff: { type: 'exponential', delay: 3000 }
+																						});
+																						
+																						console.info(`📩 [Notification] System alert queued to manager for new instance ${id}`);
+																				} else {
+																						console.warn(`⚠️ [Notification] Admin instance (${adminJid.split('@')[0]}) is not connected. Could not send alert.`);
+																				}
+																		} catch (error: any) {
+																				console.error(`❌ [Notification] Error sending alert:`, error.message);
+																		}
+																}
+												}
 
                         if (connection === 'close') {
 
@@ -403,6 +473,10 @@ export class InstanceManager {
 	static async deleteInstance(id: string) {
         this.deletedInstances.add(id);
         
+				setTimeout(() => {
+            this.deletedInstances.delete(id);
+        }, 120000);
+
         const sock = InstanceManager.instances.get(id);
         const store = InstanceManager.messageStores.get(id);
         
@@ -422,13 +496,6 @@ export class InstanceManager {
                 console.error(`⚠️ Error during socket termination for ${id}:`, err.message);
             }
         }
-
-        try {
-            const jobs = await messageQueue.getJobs(['waiting', 'delayed', 'active', 'paused', 'prioritized']);
-            for (const job of jobs) {
-                if (job.data && job.data.id === id) await job.remove();
-            }
-        } catch (queueErr) {}
 
         const authPath = path.join('./instances', id);
         if (fs.existsSync(authPath)) {
