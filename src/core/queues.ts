@@ -23,49 +23,61 @@ export const webhookQueue = new Queue('WebhookQueue', { connection: connectionOp
 // 2. العامل الأول: مُرسل الرسائل (Message Worker)
 // ==========================================
 const messageWorker = new Worker('MessageQueue', async (job: Job) => {
-    const { id, jid, text, file, fileName, transactionId } = job.data;
+    // 1. استخراج الحقول الجديدة (mimetype, fileType) من بيانات المهمة
+    const { id, jid, text, file, fileName, mimetype, fileType, transactionId } = job.data;
     
-		const sock = InstanceManager.instances.get(id);
+    const sock = InstanceManager.instances.get(id);
 
-		// 1. إذا لم نجد الـ socket في الـ Map، فهذا يعني أن الجهاز تم حذفه نهائياً
-		if (!sock) {
-				console.warn(`⚠️ [MessageQueue] Instance ${id} is completely deleted. Dropping job ${job.id}.`);
-				return; // نستخدم return بدلاً من throw لإنهاء المهمة فوراً وعدم إعادتها للطابور (Fast-Fail)
-		}
+    if (!sock) {
+        console.warn(`⚠️ [MessageQueue] Instance ${id} is completely deleted. Dropping job ${job.id}.`);
+        return; 
+    }
 
-		// 2. إذا وجدناه لكنه غير متصل (انقطاع مؤقت للشبكة)، نرمي خطأ لكي يعيد BullMQ المحاولة لاحقاً
-		if (sock.status !== 'CONNECTED') {
-				throw new Error(`[Retry] Instance ${id} is temporarily disconnected. Will retry later.`);
-		}
+    if (sock.status !== 'CONNECTED') {
+        throw new Error(`[Retry] Instance ${id} is temporarily disconnected. Will retry later.`);
+    }
 
     let result: any;
 
     await sock.sendPresenceUpdate('composing', jid);
-
     await humanDelay(text);
 
     if (file) {
-        result = await sock.sendMessage(jid, {
-            document: Buffer.from(file, 'base64'),
-            mimetype: 'application/pdf',
-            fileName: fileName || 'document.pdf',
-            caption: text
-        });
+        // 2. إنشاء كائن الوسائط ديناميكياً بناءً على نوع الملف القادم من السيرفر
+        const mediaContent: any = {
+            caption: text,
+            mimetype: mimetype, // استخدام المايم تايب الحقيقي بدلاً من الثابت
+        };
+
+        // تحويل Base64 إلى Buffer
+        const fileBuffer = Buffer.from(file, 'base64');
+
+        // 3. تحديد الحقل المناسب في Baileys بناءً على fileType
+        if (fileType === 'imageMessage') {
+            mediaContent.image = fileBuffer;
+        } else if (fileType === 'videoMessage') {
+            mediaContent.video = fileBuffer;
+        } else if (fileType === 'audioMessage') {
+            mediaContent.audio = fileBuffer;
+        } else {
+            // الحالة الافتراضية للمستندات
+            mediaContent.document = fileBuffer;
+            mediaContent.fileName = fileName || 'document.pdf';
+        }
+
+        result = await sock.sendMessage(jid, mediaContent);
     } else {
         result = await sock.sendMessage(jid, { text });
     }
 
     await sock.sendPresenceUpdate('paused', jid);
 
-    // إذا نجح الإرسال، نحفظ بيانات العملية ونرسل إشعار الويب هوك
+    // حفظ بيانات العملية لإرسال الـ Webhook لاحقاً
     if (result?.key?.id) {
         const messageId = result.key.id;
         const sendTimestamp = new Date().toISOString();
-
-        // حفظ العملية في Redis لمدة 7 أيام (604800 ثانية) لتتبع الاستلام
         await redisConnection.setex(`wa:txn:${messageId}`, 604800, JSON.stringify({ transactionId, sendTimestamp }));
-
-        // إضافة مهمة إرسال ويب هوك إلى طابور الويب هوكات
+        
         await webhookQueue.add('send-webhook', {
             instanceId: id,
             payload: {
@@ -77,11 +89,6 @@ const messageWorker = new Worker('MessageQueue', async (job: Job) => {
                 deliveryTimestamp: null,
                 recipient: jid
             }
-        }, { 
-            attempts: 8, 
-            backoff: { type: 'exponential', delay: 3000 },
-            removeOnComplete: true,
-            removeOnFail: false
         });
     }
 }, { connection: connectionOptions });

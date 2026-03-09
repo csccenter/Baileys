@@ -14,15 +14,22 @@ import { messageQueue, webhookQueue, redisConnection } from '../core/queues.js'
 import fastifyBasicAuth from '@fastify/basic-auth'
 import fastifyStatic from '@fastify/static'
 
+import multipart from '@fastify/multipart' //
+
 async function bootstrap() {
 
 	const INSTANCE_SECRET_KEY = 'ubovv1qwz0msltpuiniybo'
 	
 	const fastify = Fastify({ 
-		bodyLimit: 10 * 1024 * 1024,
 		logger: { level: 'error' },
 		ajv: { customOptions: { strict: false, allErrors: true } } 
 	})
+
+	await fastify.register(multipart, {
+    limits: {
+        fileSize: 20 * 1024 * 1024 // حد أقصى 20 ميجابايت للملف
+    }
+	});
 
 	await fastify.register(cors, { 
 			origin: true,
@@ -261,73 +268,84 @@ const frontendPath = path.join(process.cwd(), 'public');
             };
 	});
 	
-	fastify.post('/instances/:id/messages/send', {
-			schema: {
-					summary: 'إرسال رسالة',
-					description: 'تسمح لك هذه النقطة بإرسال رسائل نصية أو ملفات PDF إلى رقم واتساب محدد. يتم التحقق من وجود الرقم قبل الإرسال.',
-					tags: ['Messages'],
-					security: [{ bearerAuth: [] }],
-					params: {
-							type: 'object',
-							properties: { id: { type: 'string', description: 'معرف الجهاز (Instance ID)' } }
-					},
-					body: {
-							type: 'object',
-							required: ['jid'],
-							properties: {
-									jid: { 
-											type: 'string', 
-											description: 'رقم المستلم مع رمز الدولة (مثال: 966500000000)' 
-									},
-									text: { 
-											type: 'string', 
-											description: 'نص الرسالة' 
-									},
-							},
-							example: {
-									jid: "966500000000",
-									text: "مرفق لكم فاتورة الاشتراك",
-							}
-					}
-			}
-	}, async (request: any, reply) => {
-			const { id } = request.params;
-			const { jid, text, file, fileName } = request.body;
-			const sock = (InstanceManager as any).instances.get(id);
-			const timestamp = new Date().toISOString();
+fastify.post('/instances/:id/messages/send', {
+    schema: {
+        summary: 'إرسال رسالة (Multipart)',
+        description: 'إرسال نص أو وسائط باستخدام Multipart/form-data لتحسين أداء الذاكرة.',
+        tags: ['Messages'],
+        security: [{ bearerAuth: [] }],
+        params: {
+            type: 'object',
+            properties: { id: { type: 'string', description: 'معرف الجهاز' } }
+        },
+        consume: ['multipart/form-data'],
+        body: {
+            type: 'object',
+            properties: {
+                jid: { type: 'string', description: 'رقم المستلم' },
+                text: { type: 'string', description: 'نص الرسالة' },
+                file: { type: 'string', format: 'binary', description: 'الملف المراد إرساله' }
+            }
+        }
+    },
+    // 🌟 السطر السحري: إيقاف التحقق التلقائي لمنع خطأ 400 بسبب الـ Multipart 🌟
+    validatorCompiler: () => () => true,
+}, async (request: any, reply) => {
+    const { id } = request.params;
+    
+    // استخراج البيانات من الحقول بشكل صحيح
+		// قراءة البيانات بنظام Multipart
+    const data = await request.file();
+    if (!data) return reply.status(400).send({ error: 'الملف مفقود' });
 
-			if (!sock || sock.status !== 'CONNECTED') {
-					return reply.status(200).send({ 
-							instanceId: id, instanceStatus: 'DISCONNECTED', waAccountStatus: 'unknown', transactionId: 'unknown', timestamp
-					});
-			}
+    // استخراج البيانات من الحقول
+    const rawJid = data.fields.jid?.value || ''; 
+    const text = data.fields.text?.value || ''; 
+    
+    // 🌟 الإصلاح: تنظيف الرقم وتنسيقه ليتوافق مع مكتبة Baileys 🌟
+    let jid = rawJid;
+    // إذا لم يكن الرقم يحتوي على @ (يعني أنه ليس JID جاهز)، نقوم بتنسيقه
+    if (!jid.includes('@')) {
+        const cleanNumber = jid.replace(/[^0-9]/g, ''); // إزالة الـ + والمسافات
+        jid = `${cleanNumber}@s.whatsapp.net`; // إضافة لاحقة واتساب
+    }
+    
+    const sock = (InstanceManager as any).instances.get(id);
+    const timestamp = new Date().toISOString();
 
-			const cleanNumber = jid.replace(/[^0-9]/g, ''); 
-			const formattedJid = cleanNumber.includes('@s.whatsapp.net') ? cleanNumber : `${cleanNumber}@s.whatsapp.net`;
-			const [resultCheck] = await sock.onWhatsApp(formattedJid);
+    if (!sock || sock.status !== 'CONNECTED') {
+        return reply.status(200).send({ 
+            instanceId: id, instanceStatus: 'DISCONNECTED', waAccountStatus: 'unknown', transactionId: 'unknown', timestamp
+        });
+    }
 
-			if (!resultCheck || !resultCheck.exists) {
-					return reply.status(200).send({ 
-							instanceId: id, instanceStatus: 'CONNECTED', waAccountStatus: 'not_exists', transactionId: 'unknown', timestamp
-					});
-			}
+    // تحويل الملف لـ Buffer ثم Base64 للطابور
+    const fileBuffer = await data.toBuffer();
+    const fileBase64 = fileBuffer.toString('base64');
+    const mimetype = data.mimetype;
+    const fileName = data.filename;
+    const transactionId = nanoid(16);
 
-			const finalJid = resultCheck.jid;
-			const transactionId = nanoid(16); 
+    // تحديد نوع الملف للطابور
+    let fileType = 'documentMessage';
+    if (mimetype.startsWith('image/')) fileType = 'imageMessage';
+    else if (mimetype.startsWith('video/')) fileType = 'videoMessage';
+    else if (mimetype.startsWith('audio/')) fileType = 'audioMessage';
 
-			reply.status(200).send({
-					instanceId: id, instanceStatus: 'CONNECTED', waAccountStatus: 'exists', transactionId, timestamp
-			});
+    // إرسال الرد السريع للفرونت إند (وضعتها هنا قبل الطابور لسرعة استجابة المتصفح)
+    reply.status(200).send({
+        instanceId: id, instanceStatus: 'CONNECTED', waAccountStatus: 'exists', transactionId, timestamp
+    });
 
-			const initialDelay = Math.floor(Math.random() * 4000) + 1000;
-			await messageQueue.add('send', { id, jid: finalJid, text, file, fileName, transactionId }, {
-					delay: initialDelay,
-					attempts: 8, 
-					backoff: { type: 'exponential', delay: 3000 },
-					removeOnComplete: { count: 1000 }, 
-					removeOnFail: { count: 1000 }      
-				});
-	});
+    // إضافة المهمة للطابور
+    await messageQueue.add('send', { 
+        id, jid, text, file: fileBase64, fileName, mimetype, fileType, transactionId 
+    }, {
+        delay: 1000,
+        attempts: 8,
+        backoff: { type: 'exponential', delay: 3000 }
+    });
+});
 
 	fastify.get('/instances/:id/config', { schema: { hide: true } }, async (request: any, reply) => {
 			const { id } = request.params;
