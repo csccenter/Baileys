@@ -14,7 +14,7 @@ import { messageQueue, webhookQueue, redisConnection } from '../core/queues.js'
 import fastifyBasicAuth from '@fastify/basic-auth'
 import fastifyStatic from '@fastify/static'
 
-import multipart from '@fastify/multipart' //
+import multipart from '@fastify/multipart'
 
 async function bootstrap() {
 
@@ -284,6 +284,7 @@ fastify.post('/instances/:id/messages/send', {
             properties: {
                 jid: { type: 'string', description: 'رقم المستلم' },
                 text: { type: 'string', description: 'نص الرسالة' },
+                delay: { type: 'string', description: 'التأخير بالملي ثانية (للجدولة الاختيارية)' },
                 file: { type: 'string', format: 'binary', description: 'الملف المراد إرساله' }
             }
         }
@@ -293,21 +294,20 @@ fastify.post('/instances/:id/messages/send', {
 }, async (request: any, reply) => {
     const { id } = request.params;
     
-    // استخراج البيانات من الحقول بشكل صحيح
-		// قراءة البيانات بنظام Multipart
+    // قراءة البيانات بنظام Multipart
     const data = await request.file();
     if (!data) return reply.status(400).send({ error: 'الملف مفقود' });
 
     // استخراج البيانات من الحقول
     const rawJid = data.fields.jid?.value || ''; 
     const text = data.fields.text?.value || ''; 
+    const delayStr = data.fields.delay?.value; // 🌟 إضافة استقبال قيمة الجدولة
     
-    // 🌟 الإصلاح: تنظيف الرقم وتنسيقه ليتوافق مع مكتبة Baileys 🌟
+    // تنظيف الرقم وتنسيقه ليتوافق مع مكتبة Baileys
     let jid = rawJid;
-    // إذا لم يكن الرقم يحتوي على @ (يعني أنه ليس JID جاهز)، نقوم بتنسيقه
     if (!jid.includes('@')) {
-        const cleanNumber = jid.replace(/[^0-9]/g, ''); // إزالة الـ + والمسافات
-        jid = `${cleanNumber}@s.whatsapp.net`; // إضافة لاحقة واتساب
+        const cleanNumber = jid.replace(/[^0-9]/g, ''); 
+        jid = `${cleanNumber}@s.whatsapp.net`; 
     }
     
     const sock = (InstanceManager as any).instances.get(id);
@@ -332,16 +332,26 @@ fastify.post('/instances/:id/messages/send', {
     else if (mimetype.startsWith('video/')) fileType = 'videoMessage';
     else if (mimetype.startsWith('audio/')) fileType = 'audioMessage';
 
-    // إرسال الرد السريع للفرونت إند (وضعتها هنا قبل الطابور لسرعة استجابة المتصفح)
+    // 🌟 تحويل الجدولة إلى رقم، إذا لم توجد نستخدم 1000 ملي ثانية الافتراضية 🌟
+
+		let customDelay = 1000; // الإرسال الفوري كافتراضي
+		if (delayStr) {
+				const parsedDelay = parseInt(delayStr, 10);
+				if (parsedDelay > 0) {
+						customDelay = parsedDelay;
+				}
+		}
+		
+    // إرسال الرد السريع للفرونت إند
     reply.status(200).send({
-        instanceId: id, instanceStatus: 'CONNECTED', waAccountStatus: 'exists', transactionId, timestamp
+        instanceId: id, instanceStatus: 'CONNECTED', waAccountStatus: 'exists', transactionId, timestamp, scheduledDelay: customDelay
     });
 
-    // إضافة المهمة للطابور
+    // إضافة المهمة للطابور (مع الاعتماد على customDelay)
     await messageQueue.add('send', { 
         id, jid, text, file: fileBase64, fileName, mimetype, fileType, transactionId 
     }, {
-        delay: 1000,
+        delay: customDelay, // 🌟 استخدام التأخير الديناميكي للجدولة أو الفوري 🌟
         attempts: 8,
         backoff: { type: 'exponential', delay: 3000 }
     });
