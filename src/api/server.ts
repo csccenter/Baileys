@@ -357,6 +357,74 @@ fastify.post('/instances/:id/messages/send', {
     });
 });
 
+
+fastify.post('/instances/:id/messages/send-json', {
+    schema: {
+        summary: 'إرسال رسالة نصية (JSON)',
+        description: 'نقطة نهاية تقبل البيانات بصيغة JSON مخصصة لإرسال الرسائل النصية المجدولة أو الفورية.',
+        tags: ['Messages'],
+        security: [{ bearerAuth: [] }],
+        params: {
+            type: 'object',
+            properties: { id: { type: 'string', description: 'معرف الجهاز' } }
+        },
+        body: {
+            type: 'object',
+            required: ['jid', 'text'],
+            properties: {
+                jid: { type: 'string', description: 'رقم المستلم' },
+                text: { type: 'string', description: 'نص الرسالة' },
+                delay: { type: 'number', description: 'التأخير بالملي ثانية للجدولة (اختياري)' }
+            }
+        }
+    }
+}, async (request: any, reply) => {
+    const { id } = request.params;
+    const body = request.body;
+
+    const rawJid = body.jid || '';
+    const text = body.text || '';
+    const delay = body.delay;
+
+    // تنظيف الرقم وتنسيقه ليتوافق مع مكتبة Baileys
+    let jid = rawJid;
+    if (!jid.includes('@')) {
+        const cleanNumber = jid.replace(/[^0-9]/g, ''); 
+        jid = `${cleanNumber}@s.whatsapp.net`; 
+    }
+
+    const sock = (InstanceManager as any).instances.get(id);
+    const timestamp = new Date().toISOString();
+
+    if (!sock || sock.status !== 'CONNECTED') {
+        return reply.status(200).send({ 
+            instanceId: id, instanceStatus: 'DISCONNECTED', waAccountStatus: 'unknown', transactionId: 'unknown', timestamp
+        });
+    }
+
+    const transactionId = nanoid(16);
+
+    // تأمين وتجهيز الجدولة
+    let customDelay = 1000;
+    if (delay && delay > 0) {
+        customDelay = delay;
+    }
+
+    // الرد السريع للأنظمة المتصلة
+    reply.status(200).send({
+        instanceId: id, instanceStatus: 'CONNECTED', waAccountStatus: 'exists', transactionId, timestamp, scheduledDelay: customDelay
+    });
+
+    // إضافة المهمة للطابور (رسالة نصية فقط بدون حقول الملفات)
+    await messageQueue.add('send', { 
+        id, jid, text, transactionId 
+    }, {
+        delay: customDelay,
+        attempts: 8,
+        backoff: { type: 'exponential', delay: 3000 }
+    });
+});
+
 	fastify.get('/instances/:id/config', { schema: { hide: true } }, async (request: any, reply) => {
 			const { id } = request.params;
 			const { magic } = request.query;
