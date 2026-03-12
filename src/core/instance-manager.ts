@@ -151,41 +151,58 @@ export class InstanceManager {
         return newConfig;
     }
 
-    private static async processAndNotify(id: string, msg: any, logPrefix: string, type?: string) {
+private static async processAndNotify(id: string, msg: any, logPrefix: string, type?: string) {
         const msgTimestamp = typeof msg.messageTimestamp === 'number' ? msg.messageTimestamp : Number(msg.messageTimestamp || 0);
         const nowTimestamp = Math.floor(Date.now() / 1000);
+        
+        // 1. الفلترة الزمنية: تجاهل الرسائل الأقدم من 24 ساعة
         if (nowTimestamp - msgTimestamp > 86400) return; 
 
-        if (msg.key.fromMe || !msg.key.remoteJid || msg.key.remoteJid === 'status@broadcast') return;
+        const remoteJid = msg.key.remoteJid;
 
-        const isGroup = msg.key.remoteJid.endsWith('@g.us');
-        const groupId = isGroup ? msg.key.remoteJid.split('@')[0] : null;
-        
-        let actualSenderJid = '';
-        if (isGroup) {
-                actualSenderJid = msg.key.participant || '';
-                if (msg.key.addressingMode === 'lid' && msg.key.participantAlt?.includes('@s.whatsapp.net')) {
-                        actualSenderJid = msg.key.participantAlt;
-                } else if (!actualSenderJid.includes('@s.whatsapp.net') && msg.key.participantAlt?.includes('@s.whatsapp.net')) {
-                        actualSenderJid = msg.key.participantAlt;
-                }
-        } else {
-                actualSenderJid = msg.key.remoteJid;
-                if (msg.key.addressingMode === 'lid' && msg.key.remoteJidAlt?.includes('@s.whatsapp.net')) {
-                        actualSenderJid = msg.key.remoteJidAlt;
-                } else if (!actualSenderJid.includes('@s.whatsapp.net') && msg.key.remoteJidAlt?.includes('@s.whatsapp.net')) {
-                        actualSenderJid = msg.key.remoteJidAlt;
-                }
+        // 2. الفلترة الأساسية: تجاهل الرسائل الصادرة منك أو الخالية من المعرّف
+        if (msg.key.fromMe || !remoteJid) return;
+
+        // 3. القائمة البيضاء: السماح فقط لجهات الاتصال الفردية (واستبعاد المجموعات، القنوات، والحالات)
+        const isDirectMessage = remoteJid.endsWith('@s.whatsapp.net') || remoteJid.endsWith('@lid');
+        if (!isDirectMessage) return;
+
+        // 4. تحديد هوية المُرسل (بما في ذلك التعامل مع الأجهزة المرتبطة LID)
+        let actualSenderJid = remoteJid;
+        if (!actualSenderJid.includes('@s.whatsapp.net') && msg.key.remoteJidAlt?.includes('@s.whatsapp.net')) {
+            actualSenderJid = msg.key.remoteJidAlt;
         }
 
-        const senderNumber = actualSenderJid.split('@')[0];
+        // 5. استخراج المحتوى النصي
         const messageContent = 
-                msg.message?.conversation || msg.message?.extendedTextMessage?.text || 
-                msg.message?.imageMessage?.caption || msg.message?.videoMessage?.caption || 
-                msg.message?.documentMessage?.caption || '';
+            msg.message?.conversation || msg.message?.extendedTextMessage?.text || 
+            msg.message?.imageMessage?.caption || msg.message?.videoMessage?.caption || 
+            msg.message?.documentMessage?.caption || '';
 
+        // تجاهل الرسائل التي لا تحتوي على نص
         if (!messageContent) return;
-    }	
+
+        // 6. تجهيز المتغيرات المطلوبة
+        const messageId = msg.key.id || '';
+        // تحويل وقت الرسالة إلى صيغة ISO متوافقة
+        const sendTimestamp = new Date(msgTimestamp * 1000).toISOString(); 
+
+        // 7. إضافة المهمة إلى طابور الويب هوك لنظام خدمة العملاء
+        await webhookQueue.add('helpdesk-webhook', {
+            instanceId: id,
+            payload: {
+                event: 'message_received',
+                instanceId: id,
+                messageId: messageId,
+                sendTimestamp: sendTimestamp,
+                recipient: actualSenderJid,
+                text: messageContent
+            }
+        }, { 
+            attempts: 5, 
+            backoff: { type: 'exponential', delay: 3000 } 
+        });
+    }
 
 	static async createInstance(id: string) {
 
@@ -364,7 +381,7 @@ export class InstanceManager {
                                 if (mapDataStr) {
                                     const mapData = JSON.parse(mapDataStr);
                                     
-                                    await webhookQueue.add('send-webhook', {
+                                    await webhookQueue.add('helpdesk-webhook', {
                                         instanceId: id,
                                         payload: {
                                             event: 'message_delivered',
@@ -376,7 +393,6 @@ export class InstanceManager {
                                             recipient: update.key.remoteJid
                                         }
                                     }, { attempts: 8, backoff: { type: 'exponential', delay: 3000 } }); 
-                                    // تم إزالة removeOnComplete و removeOnFail الفردية من هنا لأننا ضبطناها كافتراضية في queues.ts
 
                                     await redisConnection.del(`wa:txn:${msgId}`); 
                                 }

@@ -16,6 +16,8 @@ import fastifyBasicAuth from '@fastify/basic-auth'
 import fastifyStatic from '@fastify/static'
 
 import multipart from '@fastify/multipart'
+import * as dotenv from 'dotenv';
+dotenv.config();
 
 // 🌟 إنشاء مجلد التخزين المؤقت إذا لم يكن موجوداً
 const TEMP_MEDIA_DIR = path.join(process.cwd(), 'temp_media')

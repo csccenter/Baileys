@@ -3,6 +3,9 @@ import IORedis from 'ioredis';
 import { InstanceManager } from './instance-manager';
 import fs from 'fs';
 
+import * as dotenv from 'dotenv';
+dotenv.config();
+
 const connectionOptions = {
     host: '127.0.0.1',
     port: 6379,
@@ -101,7 +104,7 @@ const messageWorker = new Worker('MessageQueue', async (job: Job, token?: string
         const sendTimestamp = new Date().toISOString();
         await redisConnection.setex(`wa:txn:${messageId}`, 604800, JSON.stringify({ transactionId, sendTimestamp }));
         
-        await webhookQueue.add('send-webhook', {
+        await webhookQueue.add('helpdesk-webhook', {
             instanceId: id,
             payload: {
                 event: 'message_sent',
@@ -150,18 +153,46 @@ messageWorker.on('failed', (job, err) => {
 const webhookWorker = new Worker('WebhookQueue', async (job: Job) => {
     const { instanceId, payload } = job.data;
     
-    const config = await InstanceManager.getConfig(instanceId);
-    if (!config || !config.webhook) return;
+    // 🌟 المعالجة الجديدة الخاصة بنظام خدمة العملاء (Helpdesk)
+    if (job.name === 'helpdesk-webhook') {
+        const helpdeskUrl = process.env.HELPDESK_WEBHOOK;
+        const helpdeskToken = process.env.HELPDESK_TOKEN;
 
-    const response = await fetch(config.webhook, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-    });
+        if (!helpdeskUrl) {
+            console.warn(`⚠️ [WebhookQueue] HELPDESK_WEBHOOK is not defined in .env`);
+            return;
+        }
 
-    if (!response.ok) {
-        throw new Error(`HTTP Status: ${response.status}`);
+        const response = await fetch(helpdeskUrl, {
+            method: 'POST',
+            headers: { 
+                'Content-Type': 'application/json',
+                'x-baileys-token': `${helpdeskToken}`
+            },
+            body: JSON.stringify(payload)
+        });
+
+        if (!response.ok) {
+            throw new Error(`Helpdesk HTTP Status: ${response.status}`);
+        }
+        return; // إنهاء التنفيذ هنا حتى لا يكمل للويب هوك العادي
+    } else {
+        // المعالجة القديمة (الويب هوك المخصص لكل جهاز)
+        const config = await InstanceManager.getConfig(instanceId);
+        if (!config || !config.webhook) return;
+
+        const response = await fetch(config.webhook, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+
+        if (!response.ok) {
+            throw new Error(`HTTP Status: ${response.status}`);
+        }
     }
+
+
     
 }, { connection: connectionOptions });
 
