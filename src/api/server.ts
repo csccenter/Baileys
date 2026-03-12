@@ -6,6 +6,7 @@ import { InstanceManager } from '../core/instance-manager.js'
 import { nanoid } from 'nanoid'
 import fs from 'fs'
 import path from 'path'
+import { pipeline } from 'stream/promises' // تم الإضافة: للتعامل مع تدفق الملفات
 
 import { createBullBoard } from '@bull-board/api'
 import { BullMQAdapter } from '@bull-board/api/bullMQAdapter'
@@ -15,6 +16,12 @@ import fastifyBasicAuth from '@fastify/basic-auth'
 import fastifyStatic from '@fastify/static'
 
 import multipart from '@fastify/multipart'
+
+// 🌟 إنشاء مجلد التخزين المؤقت إذا لم يكن موجوداً
+const TEMP_MEDIA_DIR = path.join(process.cwd(), 'temp_media');
+if (!fs.existsSync(TEMP_MEDIA_DIR)) {
+    fs.mkdirSync(TEMP_MEDIA_DIR, { recursive: true });
+}
 
 async function bootstrap() {
 
@@ -98,7 +105,7 @@ async function bootstrap() {
 	await fastify.register(fastifyBasicAuth, {
 			validate: async function (username, password, req, reply) {
 					if (username !== 'admin' || password !== 'nimda@2030') {
-							return new Error('Unauthorized'); // رفض الدخول إذا كانت البيانات خاطئة
+							return new Error('Unauthorized'); 
 					}
 			},
 			authenticate: true
@@ -289,7 +296,6 @@ fastify.post('/instances/:id/messages/send', {
             }
         }
     },
-    // 🌟 السطر السحري: إيقاف التحقق التلقائي لمنع خطأ 400 بسبب الـ Multipart 🌟
     validatorCompiler: () => () => true,
 }, async (request: any, reply) => {
     const { id } = request.params;
@@ -301,7 +307,7 @@ fastify.post('/instances/:id/messages/send', {
     // استخراج البيانات من الحقول
     const rawJid = data.fields.jid?.value || ''; 
     const text = data.fields.text?.value || ''; 
-    const delayStr = data.fields.delay?.value; // 🌟 إضافة استقبال قيمة الجدولة
+    const delayStr = data.fields.delay?.value; 
     
     // تنظيف الرقم وتنسيقه ليتوافق مع مكتبة Baileys
     let jid = rawJid;
@@ -319,12 +325,20 @@ fastify.post('/instances/:id/messages/send', {
         });
     }
 
-    // تحويل الملف لـ Buffer ثم Base64 للطابور
-    const fileBuffer = await data.toBuffer();
-    const fileBase64 = fileBuffer.toString('base64');
     const mimetype = data.mimetype;
     const fileName = data.filename;
     const transactionId = nanoid(16);
+
+    // 🌟 حفظ الملف مؤقتاً في القرص الصلب باستخدام Stream بدلاً من Buffer
+    let filePath: string | undefined;
+    if (fileName) {
+        const ext = path.extname(fileName) || '';
+        const tempFileName = `${nanoid(16)}${ext}`; // اسم فريد لمنع التعارض
+        filePath = path.join(TEMP_MEDIA_DIR, tempFileName);
+        
+        // استخدام pipeline لضمان تدفق الملف بأمان وبدون استهلاك RAM
+        await pipeline(data.file, fs.createWriteStream(filePath));
+    }
 
     // تحديد نوع الملف للطابور
     let fileType = 'documentMessage';
@@ -332,9 +346,7 @@ fastify.post('/instances/:id/messages/send', {
     else if (mimetype.startsWith('video/')) fileType = 'videoMessage';
     else if (mimetype.startsWith('audio/')) fileType = 'audioMessage';
 
-    // 🌟 تحويل الجدولة إلى رقم، إذا لم توجد نستخدم 1000 ملي ثانية الافتراضية 🌟
-
-		let customDelay = 1000; // الإرسال الفوري كافتراضي
+		let customDelay = 1000; 
 		if (delayStr) {
 				const parsedDelay = parseInt(delayStr, 10);
 				if (parsedDelay > 0) {
@@ -347,11 +359,11 @@ fastify.post('/instances/:id/messages/send', {
         instanceId: id, instanceStatus: 'CONNECTED', waAccountStatus: 'exists', transactionId, timestamp, scheduledDelay: customDelay
     });
 
-    // إضافة المهمة للطابور (مع الاعتماد على customDelay)
+    // إضافة المهمة للطابور (نمرر المسار filePath بدلاً من fileBase64)
     await messageQueue.add('send', { 
-        id, jid, text, file: fileBase64, fileName, mimetype, fileType, transactionId 
+        id, jid, text, filePath, fileName, mimetype, fileType, transactionId 
     }, {
-        delay: customDelay, // 🌟 استخدام التأخير الديناميكي للجدولة أو الفوري 🌟
+        delay: customDelay, 
         attempts: 8,
         backoff: { type: 'exponential', delay: 3000 }
     });
@@ -596,10 +608,28 @@ fastify.post('/instances/:id/messages/send-json', {
 			}
 	}
 
+    // 🌟 دالة مسح الملفات المؤقتة اليتيمة عند إعادة تشغيل السيرفر
+    async function cleanupTempMedia() {
+        if (fs.existsSync(TEMP_MEDIA_DIR)) {
+            const files = fs.readdirSync(TEMP_MEDIA_DIR);
+            for (const file of files) {
+                try {
+                    fs.unlinkSync(path.join(TEMP_MEDIA_DIR, file));
+                } catch (err) {
+                    // تجاهل أخطاء الحذف العابرة
+                }
+            }
+            if (files.length > 0) {
+                console.info(`🧹 [Cleanup] Removed ${files.length} orphaned temporary media files.`);
+            }
+        }
+    }
+
 	const start = async () => {
 			try {
 					await acquireAppLock();
 					await autoCleanupZombies();
+                    await cleanupTempMedia(); // 🌟 تفعيل تنظيف الملفات المؤقتة عند بدء التشغيل
 					await fastify.listen({ port: 3000, host: '0.0.0.0' })
 					const instancesPath = './instances';
 					if (fs.existsSync(instancesPath)) {

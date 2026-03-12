@@ -1,7 +1,7 @@
 ### تعريف المتغيرات (قم بتغييرها بناءً على بيانات النسخة الخاصة بك)
-@baseUrl = https://api.mersaliy.com
-@instanceId = XRA3Njn4ct
-@apiToken = ubovv1qwz0msltpuiniybo
+@baseUrl = http://127.0.0.1:3000
+@instanceId = qa9ZonSc6X
+@apiToken = k5q40upw6u7bip6uje19jj
 @targetNumber = 966550558542
 
 ### 0. جلب بيانات الحسابات الحالية
@@ -11,13 +11,13 @@ x-admin-instance-id: {{instanceId}}
 Accept: application/json
 
 ### 1. إرسال رسالة نصية عادية
-POST {{baseUrl}}/instances/{{instanceId}}/messages/send
+POST {{baseUrl}}/instances/{{instanceId}}/messages/send-json
 Content-Type: application/json
 Authorization: Bearer {{apiToken}}
 
 {
     "jid": "{{targetNumber}}",
-    "text": "مرحباً! هذه رسالة تجريبية لاختبار الإرسال في الخلفية ونظام الـ Webhook الجديد 🚀"
+    "text": "نايف الحربي"
 }
 
 

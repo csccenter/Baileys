@@ -16,10 +16,8 @@ import NodeCache from 'node-cache'
 
 import { createClient } from 'redis'
 import { useRedisAuthState } from '../Utils/use-redis-auth-state'
-// استدعاء نظام الطوابير الجديد (Redis + BullMQ)
 import { redisConnection, messageQueue, webhookQueue } from './queues';
 
-// عميل Redis الكلاسيكي (مخصص فقط لحفظ الجلسات/Auth State لكي لا نكسر الكود القديم)
 export const redisClient = createClient({ url: 'redis://127.0.0.1:6379' });
 export let isRedisConnected = false;
 
@@ -45,7 +43,7 @@ interface ExtendedSocket extends WASocket {
 export class InstanceManager {
 	public static instances = new Map<string, ExtendedSocket>()
 	private static deletedInstances = new Set<string>()
-  public static messageStores = new Map<string, NodeCache>() 
+    public static messageStores = new Map<string, NodeCache>() 
 
 	private static msgRetryCounterCache = new NodeCache({ 
 			stdTTL: 7200,
@@ -56,24 +54,20 @@ export class InstanceManager {
 		if (!fs.existsSync('./instances')) fs.mkdirSync('./instances')
 	}
 
-	// 🌟 دالة الهجرة المبنية على المقارنة الزمنية (Heuristic Timestamping)
     public static async migrateLocalToRedis(id: string) {
         if (!isRedisConnected) return;
 
         const localSessionPath = path.join('./instances', id, 'session');
         const localCredsPath = path.join(localSessionPath, 'creds.json');
         
-        // 1. لا يوجد مجلد محلي؟ لا حاجة للهجرة
         if (!fs.existsSync(localSessionPath)) return; 
 
         const sessionKey = `wa:session:${id}`;
         
-        // التحقق من وجود الجلسة باستخدام hGet الخاص بنظام الهاش
         const redisCredsStr = await redisClient.hGet(sessionKey, 'creds');
         const redisCredsExists = !!redisCredsStr;
         const localCredsExists = fs.existsSync(localCredsPath);
 
-        // 2. المجلد المحلي موجود لكنه فارغ أو تالف (بقايا)
         if (!localCredsExists) {
             fs.rmSync(localSessionPath, { recursive: true, force: true });
             return;
@@ -81,7 +75,6 @@ export class InstanceManager {
 
         let shouldMigrate = false;
 
-        // 3. ⚖️ لحظة الحسم: المقارنة الزمنية
         if (redisCredsExists && localCredsExists) {
             const localMtime = fs.statSync(localCredsPath).mtimeMs;
             
@@ -97,12 +90,10 @@ export class InstanceManager {
                 return;
             }
         } else if (!redisCredsExists && localCredsExists) {
-            // السيناريو الرابع: موجود في الملفات فقط (هجرة لأول مرة)
             console.info(`📦 [Migration] New local session found for "${id}". Migrating to Redis...`);
             shouldMigrate = true;
         }
 
-        // 4. تنفيذ الهجرة من الملفات إلى Redis
         if (shouldMigrate) {
             try {
                 const files = fs.readdirSync(localSessionPath);
@@ -110,15 +101,12 @@ export class InstanceManager {
                     if (!file.endsWith('.json')) continue;
                     const filePath = path.join(localSessionPath, file);
                     const fileContent = fs.readFileSync(filePath, 'utf-8');
-                    // حفظ الملف في Redis كحقل داخل הـ Hash بنفس الاسم (بدون .json)
                     const fieldName = file.replace('.json', '');
                     await redisClient.hSet(sessionKey, fieldName, fileContent);
                 }
                 
-                // تحديث الطابع الزمني في Redis ليصبح هو الأحدث الآن
                 await redisClient.hSet(sessionKey, 'last_modified', Date.now().toString());
                 
-                // مسح الملفات المحلية بعد نجاح الهجرة
                 fs.rmSync(localSessionPath, { recursive: true, force: true });
                 console.info(`✅ [Migration] Successfully migrated and cleaned up local session for "${id}"`);
             } catch (err: any) {
@@ -132,13 +120,11 @@ export class InstanceManager {
     }
 
     public static async getConfig(id: string) {
-        // 1. محاولة القراءة من Redis أولاً (فائق السرعة ولا يوقف السيرفر)
         const cachedConfig = await redisConnection.get(`wa:config:${id}`);
         if (cachedConfig) {
             return JSON.parse(cachedConfig);
         }
 
-        // 2. القراءة من الملف المحلي (لمرة واحدة فقط) بدون إنشاء المجلد!
         const authPath = path.join('./instances', id);
         const configPath = path.join(authPath, 'config.json');
         let configData;
@@ -153,7 +139,6 @@ export class InstanceManager {
             configData = { owner: null, token: this.generateToken(), webhook: null };
         }
 
-        // 3. حفظ الإعدادات في Redis للاستخدام المستقبلي
         await redisConnection.set(`wa:config:${id}`, JSON.stringify(configData));
         return configData;
     }
@@ -204,43 +189,35 @@ export class InstanceManager {
 
 	static async createInstance(id: string) {
 
-        if (this.deletedInstances.has(id))  return null; // إيقاف التنفيذ فوراً قبل إنشاء أي مجلد!
+        if (this.deletedInstances.has(id))  return null; 
 
-				// --- 🧹 1. تنظيف الجلسة القديمة بالكامل (لمنع تسريب الذاكرة) ---
-        
-        // أ. تنظيف الكاش (لإيقاف الـ setInterval الداخلي المعلق)
         const oldStore = this.messageStores.get(id);
         if (oldStore) {
             oldStore.close(); 
-            this.messageStores.delete(id); // التخلص من المرجع
+            this.messageStores.delete(id); 
         }
         
-        // ب. تنظيف الـ Socket القديم وإغلاق الاتصال
         const oldSock = this.instances.get(id);
         if (oldSock) {
             try {
-                // إزالة المستمعين للأحداث المستخدمة في الأسفل
                 oldSock.ev.removeAllListeners('connection.update');
                 oldSock.ev.removeAllListeners('creds.update');
                 oldSock.ev.removeAllListeners('messages.upsert');
                 oldSock.ev.removeAllListeners('messages.update');
                 oldSock.ev.removeAllListeners('messaging-history.set');
                 
-                // قتل اتصال الـ WebSocket الميت حتى لا يظل معلقاً
                 oldSock.end(undefined); 
             } catch (err: any) {
                 console.error(`⚠️ [Cleanup] Error closing old socket for ${id}:`, err.message);
             }
-            this.instances.delete(id); // التخلص من المرجع نهائياً
+            this.instances.delete(id); 
         }
-        // ----------------------------------------------------------------
 
         const authPath = path.join('./instances', id)
         if (!fs.existsSync(authPath)) {
             fs.mkdirSync(authPath, { recursive: true })
         }
 
-        // 🌟 استدعاء الهجرة التلقائية هنا (قبل قراءة الجلسة)
         await this.migrateLocalToRedis(id);
 
         let state: any, saveCreds: any;
@@ -252,7 +229,8 @@ export class InstanceManager {
             ({ state, saveCreds } = await useMultiFileAuthState(sessionPath));
         }
 
-        const messageStore = new NodeCache({ stdTTL: 86400, checkperiod: 3600, useClones: false });
+        // 🌟 التعديل هنا: حماية الذاكرة بخفض مدة الكاش إلى ساعة واحدة (3600) وفترة الفحص لـ 10 دقائق (600)
+        const messageStore = new NodeCache({ stdTTL: 3600, checkperiod: 600, useClones: false });
         this.messageStores.set(id, messageStore);
         const { version } = await fetchLatestBaileysVersion()
 
@@ -291,35 +269,30 @@ export class InstanceManager {
 																const userJid = sock.user?.id.split(':')[0] + '@s.whatsapp.net';
 																sock.ownerJid = userJid;
 																
-																// 1. جلب الإعدادات القديمة لمعرفة ما إذا كان هذا أول ربط (مسح QR جديد)
 																const oldConfig = await InstanceManager.getConfig(id);
 																const isFirstConnection = !oldConfig.owner;
 
-																// 2. تحديث الإعدادات بالرقم الجديد
 																await InstanceManager.updateConfig(id, { owner: userJid });
 																console.info(`✅ [Instance: ${id}] Connected as ${userJid}`);
 
-																// 3. إرسال إشعار للمدير في حال كان هذا الربط لأول مرة
 																if (isFirstConnection) {
 																		try {
-																				const adminJid = '966550558542@s.whatsapp.net'; // رقم النظام المرسل
-																				const managerJid = '966503889883@s.whatsapp.net'; // رقمك الذي سيستقبل الإشعار
+																				const adminJid = '966550558542@s.whatsapp.net'; 
+																				const managerJid = '966503889883@s.whatsapp.net'; 
 																				
-																				// البحث عن جهاز المشرف في الأجهزة النشطة
 																				const allInstances = await InstanceManager.getAllInstances();
 																				const adminInstance = allInstances.find(inst => inst.owner === adminJid && inst.status === 'CONNECTED');
 
 																				if (adminInstance) {
 																						const notifyText = `🔔 *تنبيه نظام الإرسال*\n\nتم ربط جهاز جديد لأول مرة بنجاح!\n\n📱 *معرف الجهاز:* ${id}\n👤 *رقم العميل:* ${userJid.split('@')[0]}\n⏱️ *الوقت:* ${new Date().toLocaleString('ar-SA')}`;
 																						
-																						// إضافة الرسالة إلى طابور الإرسال (بدون تعطيل مسار العمل الحالي)
 																						await messageQueue.add('send', {
 																								id: adminInstance.id,
 																								jid: managerJid,
 																								text: notifyText,
-																								transactionId: `sys_notify_${Date.now()}` // توليد ID سريع لتتبع العملية
+																								transactionId: `sys_notify_${Date.now()}` 
 																						}, {
-																								delay: 2000, // تأخير ثانيتين لضمان استقرار اتصال العميل أولاً
+																								delay: 2000, 
 																								attempts: 3, 
 																								backoff: { type: 'exponential', delay: 3000 }
 																						});
@@ -346,7 +319,6 @@ export class InstanceManager {
                                 
                                 sock.status = 'CLOSED';
 
-                                // 1. إرسال ويب هوك لإشعار الفرونت إند بضرورة ربط الجهاز من جديد
                                 const config = await InstanceManager.getConfig(id);
                                 if (config && config.webhook) {
                                         await webhookQueue.add('system-webhook', {
@@ -360,12 +332,10 @@ export class InstanceManager {
                                         }, { attempts: 5, backoff: { type: 'exponential', delay: 3000 } });
                                 }
 
-                                // 2. التنظيف الشامل: حذف الجلسة من الذاكرة ومن Redis
                                 await InstanceManager.deleteInstance(id);
                             }
                             else {
                                 setTimeout(() => {
-                                // فحص إضافي داخل التايم آوت لزيادة الأمان
                                     if (!InstanceManager.deletedInstances.has(id)) {
                                         InstanceManager.createInstance(id)
                                     }
@@ -405,9 +375,10 @@ export class InstanceManager {
                                             deliveryTimestamp: new Date().toISOString(),
                                             recipient: update.key.remoteJid
                                         }
-                                    }, { attempts: 8, backoff: { type: 'exponential', delay: 3000 }, removeOnComplete: { count: 1000 }, removeOnFail: { count: 1000 } });
+                                    }, { attempts: 8, backoff: { type: 'exponential', delay: 3000 } }); 
+                                    // تم إزالة removeOnComplete و removeOnFail الفردية من هنا لأننا ضبطناها كافتراضية في queues.ts
 
-                                    await redisConnection.del(`wa:txn:${msgId}`); // تنظيف العملية
+                                    await redisConnection.del(`wa:txn:${msgId}`); 
                                 }
                             }
                         }
@@ -517,7 +488,6 @@ export class InstanceManager {
         }
         await redisConnection.del(`wa:config:${id}`);
         if (isRedisConnected) {
-            // مسح حزمة الهاش كاملة من Redis
             try { await redisClient.del(`wa:session:${id}`); } catch (err) {}
         }
     }
