@@ -9,6 +9,7 @@ baileys_store*.json
 browser-messages.json
 browser-token.json
 decoded-ws.json
+instances
 docs
 lib
 messages*.json
@@ -19,3 +20,5 @@ test.ts
 TestData
 wa-logs*
 coverage
+public
+dist
