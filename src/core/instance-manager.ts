@@ -21,7 +21,7 @@ import { redisConnection, messageQueue, webhookQueue } from './queues';
 export const redisClient = createClient({ url: 'redis://127.0.0.1:6379' });
 export let isRedisConnected = false;
 
-redisClient.on('error', (err) => {
+redisClient.on('error', (err: any) => {
     console.error('❌ Redis Auth Client Error:', err.message);
     isRedisConnected = false;
 });
