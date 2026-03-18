@@ -58,5 +58,7 @@ pm2 save
 بناء المشروع
 yarn build:single
 
+node .\build.mjs
+
 تشغيل المشروع من النسخة المبنية
 node dist/server.bundle.js

@@ -19,6 +19,13 @@ import multipart from '@fastify/multipart'
 import * as dotenv from 'dotenv';
 dotenv.config();
 
+interface WebhookData {
+  timestamp: string
+  source: string
+  data: any
+  headers?: any
+}
+
 // 🌟 إنشاء مجلد التخزين المؤقت إذا لم يكن موجوداً
 const TEMP_MEDIA_DIR = path.join(process.cwd(), 'temp_media')
 if (!fs.existsSync(TEMP_MEDIA_DIR)) {
@@ -103,6 +110,96 @@ async function bootstrap() {
 		}
 	})
 
+		fastify.post(
+	'/webhook-receiver/:source?',
+	{
+		schema: {
+		hide: true,
+		summary: 'استقبال وتخزين بيانات Webhook',
+		description: 'نقطة نهاية لاستقبال بيانات JSON من مصادر خارجية وتخزينها في الملفات',
+		tags: ['Webhook'],
+		security: [{ bearerAuth: [] }],
+		params: {
+			type: 'object',
+			properties: {
+			source: { 
+				type: 'string', 
+				description: 'مصدر البيانات (اختياري) - سيتم استخدامه في اسم الملف',
+				default: 'unknown'
+			}
+			}
+		},
+		body: {
+			type: 'object',
+			description: 'البيانات المرسلة - أي تنسيق JSON'
+		}
+		}
+	},
+	async (request: any, reply) => {
+		// التحقق من وجود توكين في الهيدر
+		const authHeader = request.headers['authorization']
+		const providedToken = authHeader?.replace('Bearer ', '')
+		
+		// يمكنك تغيير هذا التوكين أو جعله من متغيرات البيئة
+		const VALID_TOKEN = 'sadiq-secret-webhook-token-2026'
+		
+		if (!providedToken || providedToken !== VALID_TOKEN) {
+		return reply.status(401).send({
+			error: 'Unauthorized',
+			message: 'توكين غير صالح أو مفقود'
+		})
+		}
+
+		reply.status(200).send({
+			success: true,
+			message: 'تم استقبال البيانات وتخزينها بنجاح',
+		})
+
+		const { source = 'unknown' } = request.params
+		const requestData = request.body
+		const timestamp = new Date().toISOString()
+
+		// تنظيف اسم المصدر ليكون صالحاً لاسم الملف
+		const cleanSource = source.replace(/[^a-zA-Z0-9_-]/g, '_')
+		
+		// إنشاء اسم ملف فريد
+		const fileName = `webhook_${cleanSource}_${Date.now()}_${nanoid(8)}.json`
+		const filePath = path.join(TEMP_MEDIA_DIR, fileName)
+
+		// تجهيز البيانات المراد تخزينها
+		const webhookData: WebhookData = {
+		timestamp,
+		source: cleanSource,
+		data: requestData,
+		headers: {
+			'user-agent': request.headers['user-agent'],
+			'content-type': request.headers['content-type'],
+			'x-forwarded-for': request.headers['x-forwarded-for']
+		}
+		}
+
+		try {
+		// تخزين البيانات في ملف JSON
+		await fs.promises.writeFile(
+			filePath, 
+			JSON.stringify(webhookData, null, 2), 
+			'utf-8'
+		)
+
+		// تسجيل العملية
+		console.info(`📥 [Webhook] تم استقبال وتخزين بيانات من ${cleanSource} في ${fileName}`)
+
+
+		} catch (error: any) {
+		console.error(`❌ [Webhook] خطأ في تخزين البيانات: ${error.message}`)
+		
+		return reply.status(500).send({
+			error: 'Internal Server Error',
+			message: 'حدث خطأ أثناء تخزين البيانات'
+		})
+		}
+	}
+	)
 	await fastify.register(swaggerUi, { routePrefix: '/docs' })
 
 	await fastify.register(fastifyBasicAuth, {
@@ -136,6 +233,7 @@ async function bootstrap() {
 			url.startsWith('/admin/queues') ||
 			url.startsWith('/auth/request-link') ||
 			url.startsWith('/instances/verify') ||
+			url.startsWith('/webhook-receiver') ||
 			(url === '/instances' && method === 'POST') ||
 			url.includes('/config')
 
