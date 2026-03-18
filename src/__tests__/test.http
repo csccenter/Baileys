@@ -45,7 +45,7 @@ Authorization: Bearer {{apiToken}}
 
 ###
 curl -X POST https://api.mersaliy.com/webhook-receiver/myapp \
-  -H "Authorization: Bearer your-secret-webhook-token-2024" \
+  -H "Authorization: Bearer sadiq-secret-webhook-token-2026" \
   -H "Content-Type: application/json" \
   -d '{
     "event": "user.created",
