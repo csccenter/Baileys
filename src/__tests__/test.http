@@ -44,11 +44,87 @@ Authorization: Bearer {{apiToken}}
 }
 
 ###
-curl -X POST https://api.mersaliy.com/webhook-receiver/myapp \
-  -H "Authorization: Bearer sadiq-secret-webhook-token-2026" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "event": "user.created",
-    "userId": 123,
-    "email": "user@example.com"
-  }'
+
+@pdf = {{$base64 Documentation.pdf}}
+@docx = {{$base64 contract.docx}}
+
+POST https://api.mersaliy.com/webhook-receiver/sadiq
+Authorization: Bearer sadiq-secret-webhook-token-2026
+Content-Type: application/json
+
+{
+  "RequestId": "123e4567-e89b-12d3-a456-426614174000",
+  "Status": 1,
+  "Files": [
+    {
+      "FileName": "Documentation.pdf",
+      "File": "{{pdf}}"
+    },
+    {
+      "FileName": "contract.docx",
+      "File": "{{docx}}"
+    }
+  ],
+  "ReferencNumber": "REF-2024-00123",
+  "Fields": [
+    {
+      "FieldName": "Purpose",
+      "Value": "Employment Contract",
+      "Type": "text"
+    },
+    {
+      "FieldName": "Department",
+      "Value": "Human Resources",
+      "Type": "text"
+    },
+    {
+      "FieldName": "Amount",
+      "Value": 15000,
+      "Type": "number"
+    }
+  ],
+  "Signatory": [
+    {
+      "Id": "550e8400-e29b-41d4-a716-446655440000",
+      "Status": "Pending",
+      "FullName": "Ahmed Mohammed Al-Rashid",
+      "FullNameAr": "أحمد محمد الراشد",
+      "NationalId": "1234567890",
+      "SignOrder": 1,
+      "Email": "ahmed.alrashid@example.com",
+      "PhoneNumber": "+966501234567",
+      "AuthenticationType": "Email",
+      "Gender": "Male",
+      "Nationlity": "Saudi",
+      "RejectReason": null
+    },
+    {
+      "Id": "660e8400-e29b-41d4-a716-446655440001",
+      "Status": "Pending",
+      "FullName": "Fatima Abdullah Al-Sad",
+      "FullNameAr": "فاطمة عبد الله آل سعد",
+      "NationalId": "0987654321",
+      "SignOrder": 2,
+      "Email": "fatima.alsad@example.com",
+      "PhoneNumber": "+966507654321",
+      "AuthenticationType": "SMS",
+      "Gender": "Female",
+      "Nationlity": "Saudi",
+      "RejectReason": null
+    },
+    {
+      "Id": "770e8400-e29b-41d4-a716-446655440002",
+      "Status": "Completed",
+      "FullName": "John Smith",
+      "FullNameAr": "جون سميث",
+      "NationalId": "9876543210",
+      "SignOrder": 3,
+      "Email": "john.smith@example.com",
+      "PhoneNumber": "+971501234567",
+      "AuthenticationType": "Email",
+      "Gender": "Male",
+      "Nationlity": "British",
+      "RejectReason": null
+    }
+  ]
+}

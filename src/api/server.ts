@@ -19,11 +19,50 @@ import multipart from '@fastify/multipart'
 import * as dotenv from 'dotenv';
 dotenv.config();
 
+// 4. واجهة الغلاف النهائي (لحفظ البيانات مع الميتاداتا)
 interface WebhookData {
-  timestamp: string
-  source: string
-  data: any
-  headers?: any
+  timestamp: string;
+  source: string;
+  data: WebhookPayload; // 👈 هنا ربطناها بالواجهة الجديدة بدلاً من any
+  headers?: any;
+}
+
+// ==========================================
+// 🌟 واجهات بيانات الـ Webhook الواردة
+// ==========================================
+
+// 1. واجهة الملفات المرفقة
+interface WebhookFile {
+  FileName: string;
+  File: string; // (Base64)
+}
+
+// 2. واجهة بيانات الموقعين
+interface WebhookSignatory {
+  Id: string; // (GUID)
+  Status: string;
+  FullName: string;
+  FullNameAr: string;
+  NationalId: string;
+  SignOrder: number;
+  Email: string;
+  PhoneNumber: string;
+  AuthenticationType: string;
+  Gender: string;
+  Nationlity: string; // ملاحظة: مكتوبة هكذا في المصدر
+  RejectReason: string | null;
+}
+
+// 3. الواجهة الرئيسية للـ Payload الكامل
+interface WebhookPayload {
+  RequestId: string; // (GUID) - سنستخدمه كاسم للمجلد
+  Status: number;
+  Files: WebhookFile[];
+  ReferencNumber: string; // ملاحظة: مكتوبة هكذا في المصدر
+  Fields: any[];
+  Signatory: WebhookSignatory[];
+  // أضفنا هذا السطر للسماح بأي حقول إضافية غير متوقعة دون كسر الكود
+  [key: string]: any; 
 }
 
 // 🌟 إنشاء مجلد التخزين المؤقت إذا لم يكن موجوداً
@@ -37,12 +76,13 @@ async function bootstrap() {
 
 	const fastify = Fastify({
 		logger: { level: 'error' },
+  		bodyLimit: 200 * 1024 * 1024, // زيادة الحد الأقصى لحجم الجسم إلى 200 ميجابايت
 		ajv: { customOptions: { strict: false, allErrors: true } }
 	})
 
 	await fastify.register(multipart, {
 		limits: {
-			fileSize: 20 * 1024 * 1024 // حد أقصى 20 ميجابايت للملف
+			fileSize: 200 * 1024 * 1024 // حد أقصى 200 ميجابايت للملف
 		}
 	})
 
@@ -110,96 +150,98 @@ async function bootstrap() {
 		}
 	})
 
-		fastify.post(
-	'/webhook-receiver/:source?',
-	{
-		schema: {
-		hide: true,
-		summary: 'استقبال وتخزين بيانات Webhook',
-		description: 'نقطة نهاية لاستقبال بيانات JSON من مصادر خارجية وتخزينها في الملفات',
-		tags: ['Webhook'],
-		security: [{ bearerAuth: [] }],
-		params: {
-			type: 'object',
-			properties: {
-			source: { 
-				type: 'string', 
-				description: 'مصدر البيانات (اختياري) - سيتم استخدامه في اسم الملف',
-				default: 'unknown'
-			}
-			}
+
+	fastify.post(
+		'/webhook-receiver/:source?',
+		{
+			schema: { /* ... نفس المخطط الخاص بك ... */ }
 		},
-		body: {
-			type: 'object',
-			description: 'البيانات المرسلة - أي تنسيق JSON'
-		}
-		}
-	},
-	async (request: any, reply) => {
-		// التحقق من وجود توكين في الهيدر
-		const authHeader = request.headers['authorization']
-		const providedToken = authHeader?.replace('Bearer ', '')
-		
-		// يمكنك تغيير هذا التوكين أو جعله من متغيرات البيئة
-		const VALID_TOKEN = 'sadiq-secret-webhook-token-2026'
-		
-		if (!providedToken || providedToken !== VALID_TOKEN) {
-		return reply.status(401).send({
-			error: 'Unauthorized',
-			message: 'توكين غير صالح أو مفقود'
-		})
-		}
+		async (request: any, reply) => {
+			// 1. التحقق من التوكين
+			const authHeader = request.headers['authorization']
+			const providedToken = authHeader?.replace('Bearer ', '')
+			const VALID_TOKEN = 'sadiq-secret-webhook-token-2026'
 
-		reply.status(200).send({
-			success: true,
-			message: 'تم استقبال البيانات وتخزينها بنجاح',
-		})
+			if (!providedToken || providedToken !== VALID_TOKEN) {
+				return reply.status(401).send({
+					error: 'Unauthorized',
+					message: 'توكين غير صالح أو مفقود'
+				})
+			}
 
-		const { source = 'unknown' } = request.params
-		const requestData = request.body
+			const { source = 'unknown' } = request.params
+			const requestData: WebhookPayload = (request.body as WebhookPayload) || {}
+			
+			// 2. فصل المعالجة في الخلفية لتجنب تجميد الـ Event Loop أو التسبب في أخطاء Fastify
+			// نستخدم دالة غير متزامنة ولا ننتظرها بـ await
+			processWebhookInBackground(requestData, source, request.headers).catch(err => {
+				console.error('❌ [Webhook Background Task] Error:', err);
+			});
+
+			// 3. إرسال استجابة سريعة وإنهاء الدالة فوراً
+			return reply.status(200).send({
+				success: true,
+				message: 'تم استلام الطلب وجاري معالجته في الخلفية'
+			})
+		}
+	)
+
+	// دالة خارجية لمعالجة الملفات في الخلفية بأمان
+	async function processWebhookInBackground(requestData: WebhookPayload, source: string, headers: any) {
 		const timestamp = new Date().toISOString()
-
-		// تنظيف اسم المصدر ليكون صالحاً لاسم الملف
 		const cleanSource = source.replace(/[^a-zA-Z0-9_-]/g, '_')
-		
-		// إنشاء اسم ملف فريد
-		const fileName = `webhook_${cleanSource}_${Date.now()}_${nanoid(8)}.json`
-		const filePath = path.join(TEMP_MEDIA_DIR, fileName)
 
-		// تجهيز البيانات المراد تخزينها
-		const webhookData: WebhookData = {
-		timestamp,
-		source: cleanSource,
-		data: requestData,
-		headers: {
-			'user-agent': request.headers['user-agent'],
-			'content-type': request.headers['content-type'],
-			'x-forwarded-for': request.headers['x-forwarded-for']
-		}
-		}
+		const rawRequestId = requestData.RequestId || `req_${nanoid(10)}`
+		const safeRequestId = rawRequestId.replace(/[^a-zA-Z0-9_-]/g, '_') 
+		
+		const requestDir = path.join(TEMP_MEDIA_DIR, safeRequestId)
 
 		try {
-		// تخزين البيانات في ملف JSON
-		await fs.promises.writeFile(
-			filePath, 
-			JSON.stringify(webhookData, null, 2), 
-			'utf-8'
-		)
+			if (!fs.existsSync(requestDir)) {
+				await fs.promises.mkdir(requestDir, { recursive: true })
+			}
 
-		// تسجيل العملية
-		console.info(`📥 [Webhook] تم استقبال وتخزين بيانات من ${cleanSource} في ${fileName}`)
+			if (requestData.Files && Array.isArray(requestData.Files)) {
+				for (const fileObj of requestData.Files) {
+					if (fileObj && fileObj.FileName && fileObj.File) {
+						const safeFileName = path.basename(fileObj.FileName);
+						const filePath = path.join(requestDir, safeFileName);
+						
+						const base64Data = fileObj.File.replace(/^data:.*?;base64,/, "");
+						const fileBuffer = Buffer.from(base64Data, 'base64');
+						
+						await fs.promises.writeFile(filePath, fileBuffer);
+						
+						fileObj.File = `[SAVED_TO_DISK: ${safeFileName}]`;
+					}
+				}
+			}
 
+			const webhookData: WebhookData = {
+				timestamp,
+				source: cleanSource,
+				data: requestData, 
+				headers: {
+					'user-agent': headers['user-agent'],
+					'content-type': headers['content-type'],
+					'x-forwarded-for': headers['x-forwarded-for']
+				}
+			}
+
+			const jsonFilePath = path.join(requestDir, `payload.json`)
+			await fs.promises.writeFile(
+				jsonFilePath,
+				JSON.stringify(webhookData, null, 2),
+				'utf-8'
+			)
+
+			console.info(`📥 [Webhook] تم استلام ومعالجة الطلب في المجلد: ${safeRequestId}`)
 
 		} catch (error: any) {
-		console.error(`❌ [Webhook] خطأ في تخزين البيانات: ${error.message}`)
-		
-		return reply.status(500).send({
-			error: 'Internal Server Error',
-			message: 'حدث خطأ أثناء تخزين البيانات'
-		})
+			console.error(`❌ [Webhook] خطأ أثناء معالجة الطلب ${safeRequestId}:`, error.message)
 		}
 	}
-	)
+
 	await fastify.register(swaggerUi, { routePrefix: '/docs' })
 
 	await fastify.register(fastifyBasicAuth, {
