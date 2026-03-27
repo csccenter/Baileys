@@ -290,7 +290,7 @@ private static async processAndNotify(id: string, msg: any, logPrefix: string, t
 																const isFirstConnection = !oldConfig.owner;
 
 																await InstanceManager.updateConfig(id, { owner: userJid });
-																console.info(`✅ [Instance: ${id}] Connected as ${userJid}`);
+																console.info(`✅ [Instance: ${id}] Connected as ${userJid} @ ${new Date().toLocaleString('ar-SA')}`);
 
 																if (isFirstConnection) {
 																		try {
